@@ -1,0 +1,63 @@
+{% extends "base.html" %}
+{% block title %}Sources · Ignis Sport Hunter{% endblock %}
+{% block body %}
+<h2 class="section-title">Add a source / analyse a URL</h2>
+<div class="card" style="display:flex; gap:24px; flex-wrap:wrap;">
+  <form method="post" action="/add-source" onsubmit="return post(this,'src-out')">
+    <b>Watch a dealer/source</b><br>
+    <input type="text" name="url" placeholder="https://autohaus-example.de/" style="width:280px">
+    <input type="text" name="country" placeholder="DE" style="width:60px">
+    <button class="primary" type="submit">Add &amp; scan</button>
+    <div id="src-out" class="muted"></div>
+  </form>
+  <form method="post" action="/analyze-url" onsubmit="return post(this,'url-out')">
+    <b>Analyse a listing URL</b><br>
+    <input type="text" name="url" placeholder="https://…/suzuki-ignis-…" style="width:280px">
+    <input type="text" name="country" placeholder="DE" style="width:60px">
+    <button type="submit">Analyse</button>
+    <div id="url-out" class="muted"></div>
+  </form>
+</div>
+
+<h2 class="section-title">Country coverage</h2>
+<div class="card">
+  <table><thead><tr><th>Country</th><th>Sources</th><th>Dealers</th><th>Suzuki</th>
+    <th>Marketplaces</th><th>Forums/Clubs</th><th>Healthy</th><th>Failed</th></tr></thead><tbody>
+  {% for c in coverage %}
+  <tr><td>{{ c.name }} <span class="muted">{{ c.code }}</span></td>
+      <td>{{ c.sources }}</td>
+      <td>{{ (c.types.get('dealer',0) + c.types.get('suzuki_dealer',0) + c.types.get('garage',0)) }}</td>
+      <td>{{ c.types.get('suzuki_dealer',0) }}</td>
+      <td>{{ (c.types.get('major_marketplace',0) + c.types.get('classifieds',0)) }}</td>
+      <td>{{ (c.types.get('forum',0) + c.types.get('club',0) + c.types.get('community',0)) }}</td>
+      <td class="conf-hi">{{ c.healthy }}</td><td class="conf-lo">{{ c.failed }}</td></tr>
+  {% endfor %}
+  </tbody></table>
+</div>
+
+<h2 class="section-title">All sources ({{ sources|length }})</h2>
+<div class="card">
+  <table><thead><tr><th>Domain</th><th>Name</th><th>Country</th><th>Type</th>
+    <th>DV</th><th>Prio</th><th>Health</th><th>Ignis/Sport found</th><th>Last check</th></tr></thead><tbody>
+  {% for s in sources %}
+  <tr><td>{{ s.domain }}</td><td class="muted">{{ (s.name or '')[:32] }}</td>
+      <td>{{ s.country or '–' }}</td><td class="muted">{{ s.source_type }}</td>
+      <td>{{ s.discovery_value }}</td><td>{{ s.priority }}</td>
+      <td>{{ s.health }}{% if s.manual_review %} · manual{% endif %}</td>
+      <td>{{ s.ignis_found_total }}/{{ s.ignis_sport_found_total }}</td>
+      <td class="muted">{{ s.last_checked_at.strftime('%m-%d %H:%M') if s.last_checked_at else 'never' }}</td></tr>
+  {% endfor %}
+  </tbody></table>
+</div>
+
+<script>
+async function post(f, outId){
+  const out=document.getElementById(outId); out.textContent='working…';
+  const data=new FormData(f);
+  try{ const r=await fetch(f.action,{method:'POST',body:data});
+    out.textContent=JSON.stringify(await r.json()); }
+  catch(e){ out.textContent='error: '+e; }
+  return false;
+}
+</script>
+{% endblock %}

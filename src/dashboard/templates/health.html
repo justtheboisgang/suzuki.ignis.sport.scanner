@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Health &amp; Coverage · Ignis Sport Hunter{% endblock %}
+{% block body %}
+<h2 class="section-title">System health</h2>
+<div class="grid">
+  <div class="card"><div class="muted">Healthy sources</div><div class="stat conf-hi">{{ health.healthy }}</div></div>
+  <div class="card"><div class="muted">Degraded</div><div class="stat conf-mid">{{ health.degraded }}</div></div>
+  <div class="card"><div class="muted">Failed</div><div class="stat conf-lo">{{ health.failed }}</div></div>
+  <div class="card"><div class="muted">Manual review</div><div class="stat small">{{ health.manual_review }}</div></div>
+</div>
+
+<h2 class="section-title">Secondary success metrics</h2>
+<div class="grid">
+  <div class="card"><div class="muted">Known sources</div><div class="stat">{{ metrics.known_sources }}</div></div>
+  <div class="card"><div class="muted">Long-tail sources (DV≥65)</div><div class="stat">{{ metrics.long_tail_sources }}</div></div>
+  <div class="card"><div class="muted">New sources / week</div><div class="stat">{{ metrics.new_sources_week }}</div></div>
+  <div class="card"><div class="muted">Countries covered</div><div class="stat">{{ metrics.countries_covered }}</div></div>
+  <div class="card"><div class="muted">Ignis listings seen</div><div class="stat">{{ metrics.ignis_seen }}</div></div>
+  <div class="card"><div class="muted">Confirmed Sports (≥95)</div><div class="stat">{{ metrics.confirmed_sports }}</div></div>
+  <div class="card"><div class="muted">First found on dealer site</div><div class="stat">{{ metrics.listings_first_on_dealer }}</div></div>
+</div>
+
+<h2 class="section-title">⚠️ Failed / degraded sources</h2>
+<div class="card">
+  <table><thead><tr><th>Domain</th><th>Country</th><th>Health</th><th>Failures</th><th>Note</th></tr></thead><tbody>
+  {% for s in failed_sources %}
+  <tr><td>{{ s.domain }}</td><td>{{ s.country or '–' }}</td><td>{{ s.health }}</td>
+      <td>{{ s.failure_count }}</td><td class="muted">{{ (s.notes or '')[:80] }}</td></tr>
+  {% else %}<tr><td colspan="5" class="muted">None — all healthy.</td></tr>{% endfor %}
+  </tbody></table>
+</div>
+
+<h2 class="section-title">📋 Sources requiring manual review</h2>
+<div class="card">
+  <table><thead><tr><th>Domain</th><th>Country</th><th>Type</th><th>Note</th></tr></thead><tbody>
+  {% for s in manual_sources %}
+  <tr><td>{{ s.domain }}</td><td>{{ s.country or '–' }}</td><td>{{ s.source_type }}</td>
+      <td class="muted">{{ (s.notes or '')[:80] }}</td></tr>
+  {% else %}<tr><td colspan="4" class="muted">None.</td></tr>{% endfor %}
+  </tbody></table>
+</div>
+
+<h2 class="section-title">🔎 Most effective discovery queries</h2>
+<div class="card">
+  <table><thead><tr><th>Query</th><th>Country</th><th>Runs</th><th>New domains</th><th>Effectiveness</th></tr></thead><tbody>
+  {% for d in discovery %}
+  <tr><td>{{ d.query[:60] }}</td><td>{{ d.country or '–' }}</td><td>{{ d.run_count }}</td>
+      <td>{{ d.new_domains_found }}</td><td>{{ '%.2f'|format(d.effectiveness_score) }}</td></tr>
+  {% else %}<tr><td colspan="5" class="muted">No discovery runs yet.</td></tr>{% endfor %}
+  </tbody></table>
+</div>
+{% endblock %}

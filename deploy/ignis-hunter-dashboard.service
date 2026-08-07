@@ -1,0 +1,23 @@
+# systemd unit for the web dashboard.
+# Install:
+#   sudo cp deploy/ignis-hunter-dashboard.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now ignis-hunter-dashboard
+[Unit]
+Description=Ignis Sport Europe Hunter - Dashboard
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hunter
+WorkingDirectory=/opt/ignis-hunter
+EnvironmentFile=/opt/ignis-hunter/.env
+ExecStart=/opt/ignis-hunter/.venv/bin/python -m src.cli dashboard
+Restart=always
+RestartSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,95 @@
+{% extends "base.html" %}
+{% block title %}{{ (l.title or 'Listing')[:50] }} · Ignis Sport Hunter{% endblock %}
+{% block body %}
+<a href="/listings">← back</a>
+<h2 class="section-title">{{ l.title or 'Untitled listing' }}</h2>
+
+<div style="display:grid; grid-template-columns:2fr 1fr; gap:14px;">
+  <div class="card">
+    <table>
+      <tr><th>Match confidence</th><td><b>{{ l.vehicle_match_confidence }}/100</b>
+          — {{ l.classification or '–' }}</td></tr>
+      <tr><th>Opportunity</th><td><b>{{ l.opportunity_score if l.opportunity_score is not none else '–' }}/100</b></td></tr>
+      <tr><th>Price</th><td>{% if l.price_eur %}€{{ '{:,.0f}'.format(l.price_eur) }}
+          {% if l.price_original and l.currency and l.currency != 'EUR' %}
+          <span class="muted">({{ '{:,.0f}'.format(l.price_original) }} {{ l.currency }})</span>{% endif %}
+          {% else %}<span class="muted">unknown</span>{% endif %}</td></tr>
+      <tr><th>Mileage</th><td>{{ '{:,} km'.format(l.mileage_km) if l.mileage_km else 'unknown' }}</td></tr>
+      <tr><th>Year</th><td>{{ l.production_year or 'unknown' }}</td></tr>
+      <tr><th>Engine</th><td>{{ l.displacement_cc or '?' }} cc ·
+          {{ l.power_kw or '?' }} kW / {{ l.power_hp or '?' }} hp</td></tr>
+      <tr><th>Drive</th><td>{{ l.lhd_rhd or 'UNKNOWN' }}
+          {% if l.lhd_rhd_confidence %}<span class="muted">({{ l.lhd_rhd_confidence }}% conf.)</span>{% endif %}</td></tr>
+      <tr><th>Location</th><td>{{ l.country or '?' }}{% if l.city %} · {{ l.city }}{% endif %}</td></tr>
+      <tr><th>Seller</th><td>{{ l.seller_name or '?' }} ({{ l.seller_type }})
+          {% if l.seller_website %} · <a href="{{ l.seller_website }}" target="_blank" rel="noopener">website</a>{% endif %}</td></tr>
+      <tr><th>VIN / chassis</th><td>{{ l.vin_public or '–' }} / {{ l.chassis_code or '–' }}</td></tr>
+      <tr><th>Status</th><td>{{ l.listing_status }} · first seen
+          {{ l.first_seen_at.strftime('%Y-%m-%d %H:%M') }} · last seen
+          {{ l.last_seen_at.strftime('%Y-%m-%d %H:%M') }}</td></tr>
+      <tr><th>Source</th><td>{{ source.name if source else '–' }}
+          {% if source %}<span class="muted">(DV {{ source.discovery_value }}, {{ source.source_type }})</span>{% endif %}</td></tr>
+      <tr><th>Original link</th><td><a href="{{ l.original_listing_url or l.listing_url }}" target="_blank" rel="noopener">open ↗</a></td></tr>
+      {% if l.alternate_urls %}<tr><th>Also listed at</th><td>
+        {% for u in l.alternate_urls %}<a href="{{ u }}" target="_blank" rel="noopener">{{ u[:60] }}</a><br>{% endfor %}
+      </td></tr>{% endif %}
+    </table>
+  </div>
+
+  <div class="card">
+    <b>Why this score?</b>
+    {% if l.score_explanation and l.score_explanation.breakdown %}
+    <table>{% for k, v in l.score_explanation.breakdown.items() %}
+      <tr><td class="muted">{{ k }}</td><td>{{ '%+.1f'|format(v) if v is number else v }}</td></tr>
+    {% endfor %}</table>
+    {% else %}<div class="muted">No breakdown.</div>{% endif %}
+
+    <b style="display:block;margin-top:12px">Feedback</b>
+    <form method="post" action="/feedback">
+      <input type="hidden" name="internal_id" value="{{ l.internal_id }}">
+      <select name="label">
+        {% for lab in ['CONFIRMED_SPORT','NOT_SPORT','INTERESTING','NOT_INTERESTING','BOUGHT_SOLD','IGNORE_SELLER'] %}
+        <option value="{{ lab }}">{{ lab }}</option>{% endfor %}
+      </select>
+      <input type="text" name="note" placeholder="note (optional)" style="width:100%; margin-top:6px">
+      <button class="primary" type="submit" style="margin-top:6px">Save feedback</button>
+    </form>
+  </div>
+</div>
+
+{% if l.ai_analysis %}
+<h2 class="section-title">🤖 AI analysis</h2>
+<div class="card">
+  {% set an = l.ai_analysis.get('analyst') %}
+  {% set det = l.ai_analysis.get('detective') %}
+  {% if det %}<p><b>Detective:</b> {{ det.reasoning_summary }}
+    {% if det.is_fallback %}<span class="muted">(deterministic fallback)</span>{% endif %}</p>
+    <p class="muted">Positive: {{ det.positive_signals|join(', ') }} · Negative: {{ det.negative_signals|join(', ') }}</p>{% endif %}
+  {% if an %}<p><b>Condition:</b> {{ an.condition_summary }}</p>
+    <p>{{ an.translated_summary }}</p>
+    {% if an.risks %}<p class="conf-lo"><b>Risks:</b> {{ an.risks|join('; ') }}</p>{% endif %}
+    {% if an.positives %}<p class="conf-hi"><b>Positives:</b> {{ an.positives|join('; ') }}</p>{% endif %}{% endif %}
+</div>
+{% endif %}
+
+<div style="display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:6px;">
+  <div><h2 class="section-title">💶 Price history</h2><div class="card">
+    <table><thead><tr><th>When</th><th>From</th><th>To</th></tr></thead><tbody>
+    {% for p in price_hist %}<tr><td class="muted">{{ p.changed_at.strftime('%Y-%m-%d') }}</td>
+      <td>€{{ '{:,.0f}'.format(p.old_price_eur or 0) }}</td>
+      <td>€{{ '{:,.0f}'.format(p.new_price_eur or 0) }}</td></tr>
+    {% else %}<tr><td colspan="3" class="muted">No changes recorded.</td></tr>{% endfor %}
+    </tbody></table></div></div>
+  <div><h2 class="section-title">🔄 Status history</h2><div class="card">
+    <table><thead><tr><th>When</th><th>Change</th><th>Note</th></tr></thead><tbody>
+    {% for s in status_hist %}<tr><td class="muted">{{ s.changed_at.strftime('%Y-%m-%d') }}</td>
+      <td>{{ s.old_status or '–' }} → {{ s.new_status }}</td><td class="muted">{{ s.note }}</td></tr>
+    {% else %}<tr><td colspan="3" class="muted">No history.</td></tr>{% endfor %}
+    </tbody></table></div></div>
+</div>
+
+{% if l.description_original %}
+<h2 class="section-title">📝 Original description ({{ l.description_language or '?' }})</h2>
+<div class="card muted" style="white-space:pre-wrap">{{ l.description_original[:3000] }}</div>
+{% endif %}
+{% endblock %}

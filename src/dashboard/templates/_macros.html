@@ -1,0 +1,29 @@
+{% macro conf_class(c) -%}
+{%- if c >= 80 -%}conf-hi{%- elif c >= 60 -%}conf-mid{%- else -%}conf-lo{%- endif -%}
+{%- endmacro %}
+
+{% macro listing_row(l) %}
+<tr>
+  <td><a href="/listing/{{ l.internal_id }}">{{ (l.title or 'Untitled')[:70] }}</a>
+      <div class="muted">{{ l.country or '?' }}{% if l.city %} · {{ l.city }}{% endif %}
+      {% if l.lhd_rhd and l.lhd_rhd != 'UNKNOWN' %} · {{ l.lhd_rhd }}{% endif %}</div></td>
+  <td class="{{ conf_class(l.vehicle_match_confidence) }}">{{ l.vehicle_match_confidence }}</td>
+  <td>{{ l.opportunity_score if l.opportunity_score is not none else '–' }}</td>
+  <td>{% if l.price_eur %}€{{ '{:,.0f}'.format(l.price_eur) }}{% else %}<span class="muted">?</span>{% endif %}</td>
+  <td>{% if l.mileage_km %}{{ '{:,}'.format(l.mileage_km) }} km{% else %}<span class="muted">?</span>{% endif %}</td>
+  <td>{{ l.production_year or '?' }}</td>
+  <td><span class="pill">{{ l.listing_status }}</span></td>
+</tr>
+{% endmacro %}
+
+{% macro listing_table(rows) %}
+<table>
+  <thead><tr><th>Vehicle</th><th>Match</th><th>Opp</th><th>Price</th>
+  <th>Mileage</th><th>Year</th><th>Status</th></tr></thead>
+  <tbody>
+  {% for l in rows %}{{ listing_row(l) }}{% else %}
+  <tr><td colspan="7" class="muted">No listings yet — run a scan.</td></tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% endmacro %}

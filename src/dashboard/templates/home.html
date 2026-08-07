@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% import "_macros.html" as m %}
+{% block title %}Overview · Ignis Sport Hunter{% endblock %}
+{% block body %}
+
+<div class="grid">
+  <div class="card"><div class="muted">New (24h)</div><div class="stat">{{ stats.new_today }}</div></div>
+  <div class="card"><div class="muted">Active candidates ≥60</div><div class="stat">{{ stats.total_active }}</div></div>
+  <div class="card"><div class="muted">Uncertain (40–59)</div><div class="stat">{{ stats.uncertain }}</div></div>
+  <div class="card"><div class="muted">Disappeared</div><div class="stat">{{ stats.disappeared }}</div></div>
+  <div class="card"><div class="muted">Sources (active/total)</div>
+       <div class="stat small">{{ stats.sources_active }}/{{ stats.sources_total }}</div></div>
+  <div class="card"><div class="muted">Source failures</div>
+       <div class="stat small">{{ stats.failed_sources }} failed · {{ stats.degraded_sources }} degraded</div></div>
+</div>
+
+<div class="card" style="margin-top:14px; display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+  <form class="inline" method="post" action="/run-scan" onsubmit="return busy(this)">
+    <input type="hidden" name="limit" value="25">
+    <button class="primary" type="submit">▶ Run scan (25 sources)</button>
+  </form>
+  <form class="inline" method="post" action="/run-discovery" onsubmit="return busy(this)">
+    <input type="hidden" name="max_queries" value="30">
+    <button type="submit">🔎 Run discovery</button>
+  </form>
+  <span class="muted">Last scan:
+    {% if stats.last_scan %}{{ stats.last_scan.start_time.strftime('%Y-%m-%d %H:%M') }}
+      · {{ stats.last_scan.new_listings }} new · {{ stats.last_scan.pages_checked }} pages
+      · {{ stats.last_scan.ai_calls }} AI calls{% else %}never{% endif %}</span>
+</div>
+
+<h2 class="section-title">🆕 New today</h2>
+<div class="card">{{ m.listing_table(new_today) }}</div>
+
+<h2 class="section-title">⭐ Best current offers</h2>
+<div class="card">{{ m.listing_table(best) }}</div>
+
+<h2 class="section-title">❓ Uncertain candidates</h2>
+<div class="card">{{ m.listing_table(uncertain) }}</div>
+
+<div style="display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-top:14px;">
+  <div>
+    <h2 class="section-title">📉 Recent price drops</h2>
+    <div class="card">
+      <table><thead><tr><th>When</th><th>From</th><th>To</th><th>Δ</th></tr></thead><tbody>
+      {% for p in price_drops %}
+      <tr><td class="muted">{{ p.changed_at.strftime('%m-%d %H:%M') }}</td>
+          <td>€{{ '{:,.0f}'.format(p.old_price_eur or 0) }}</td>
+          <td>€{{ '{:,.0f}'.format(p.new_price_eur or 0) }}</td>
+          <td class="conf-hi">€{{ '{:,.0f}'.format(p.delta_eur or 0) }}</td></tr>
+      {% else %}<tr><td colspan="4" class="muted">None yet.</td></tr>{% endfor %}
+      </tbody></table>
+    </div>
+  </div>
+  <div>
+    <h2 class="section-title">🌐 Newly discovered sources</h2>
+    <div class="card">
+      <table><thead><tr><th>Domain</th><th>Type</th><th>Country</th><th>DV</th></tr></thead><tbody>
+      {% for s in new_sources %}
+      <tr><td>{{ s.domain }}</td><td class="muted">{{ s.source_type }}</td>
+          <td>{{ s.country or '–' }}</td><td>{{ s.discovery_value }}</td></tr>
+      {% else %}<tr><td colspan="4" class="muted">None yet.</td></tr>{% endfor %}
+      </tbody></table>
+    </div>
+  </div>
+</div>
+
+<h2 class="section-title">🔔 Recent alerts</h2>
+<div class="card">
+  <table><thead><tr><th>When</th><th>Priority</th><th>Title</th></tr></thead><tbody>
+  {% for n in notifications %}
+  <tr><td class="muted">{{ n.created_at.strftime('%m-%d %H:%M') }}</td>
+      <td><span class="pill">{{ n.priority }}</span></td>
+      <td>{{ n.title }}</td></tr>
+  {% else %}<tr><td colspan="3" class="muted">No alerts yet.</td></tr>{% endfor %}
+  </tbody></table>
+</div>
+
+<script>
+function busy(f){ const b=f.querySelector('button'); b.disabled=true;
+  b.textContent='Working… (this can take a minute)'; return true; }
+</script>
+{% endblock %}

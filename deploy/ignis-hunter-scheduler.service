@@ -1,0 +1,25 @@
+# systemd unit for the scan/discovery scheduler.
+# Install:
+#   sudo cp deploy/ignis-hunter-scheduler.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now ignis-hunter-scheduler
+# The scheduler survives reboots and needs no terminal/browser attached.
+[Unit]
+Description=Ignis Sport Europe Hunter - Scheduler
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=hunter
+WorkingDirectory=/opt/ignis-hunter
+EnvironmentFile=/opt/ignis-hunter/.env
+ExecStart=/opt/ignis-hunter/.venv/bin/python -m src.cli scheduler
+Restart=always
+RestartSec=10
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
