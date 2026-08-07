@@ -154,10 +154,24 @@ def process_candidate(session: Session, raw: RawListing,
                             is_sport_candidate=is_sport_candidate, used_ai=used_ai,
                             duplicate_merged=True, bucket=pf.bucket)
 
+    # Mark a mislabelled-Sport candidate (bare Ignis routed to AI with Sport
+    # signals) for the report's dedicated bucket.
+    if pf.bucket == "NEEDS_AI" and confidence >= settings.match_confidence_threshold:
+        candidate.classification = "MISLABELLED_SPORT_CANDIDATE"
+
     # --- New listing. ----------------------------------------------------
     session.add(candidate)
     session.flush()
     _record_status(session, candidate, None, candidate.listing_status, "first seen")
+
+    # Provenance chain + seller→source expansion (reverse discovery).
+    from .expansion import expand_seller_to_source, set_provenance
+    set_provenance(candidate, source)
+    if is_sport_candidate:
+        try:
+            expand_seller_to_source(session, candidate, source)
+        except Exception as exc:  # expansion must never break ingestion
+            log.debug("seller expansion failed: %s", exc)
 
     # Deeper AI analysis (condition/risks) for strong, fresh hits only.
     if is_sport_candidate and confidence >= 70:

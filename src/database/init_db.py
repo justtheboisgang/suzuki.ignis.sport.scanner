@@ -11,17 +11,72 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
-from sqlalchemy import inspect
+from sqlalchemy import inspect, text
+from sqlalchemy.types import Boolean, DateTime, Float, Integer
 
 from ..config.settings import BACKUP_DIR, PROJECT_ROOT, get_settings
 from ..models import Base
 from .base import engine
+from ..utils.logging import get_logger
+
+log = get_logger("database.init")
 
 
 def init_db() -> None:
-    """Create all tables that don't yet exist. Safe to call repeatedly."""
+    """Create all tables that don't yet exist, then apply additive column
+    migrations. Safe to call repeatedly."""
     get_settings().ensure_dirs()
     Base.metadata.create_all(bind=engine)
+    _apply_additive_migrations()
+
+
+def _sql_type(col) -> str:
+    """Map a SQLAlchemy column type to a portable DDL type string."""
+    t = col.type
+    if isinstance(t, Integer):
+        return "INTEGER"
+    if isinstance(t, Boolean):
+        return "BOOLEAN"
+    if isinstance(t, Float):
+        return "FLOAT"
+    if isinstance(t, DateTime):
+        return "TIMESTAMP"
+    # JSON, String, Text and everything else store fine as TEXT in SQLite and
+    # are acceptable defaults elsewhere for these additive columns.
+    try:
+        return t.compile(dialect=engine.dialect)
+    except Exception:
+        return "TEXT"
+
+
+def _apply_additive_migrations() -> None:
+    """Add any model columns that are missing from existing tables. This keeps
+    a long-running SQLite deployment upgradable without a migration framework;
+    for Postgres the same ADD COLUMN statements apply."""
+    insp = inspect(engine)
+    existing_tables = set(insp.get_table_names())
+    with engine.begin() as conn:
+        for table in Base.metadata.sorted_tables:
+            if table.name not in existing_tables:
+                continue
+            have = {c["name"] for c in insp.get_columns(table.name)}
+            for col in table.columns:
+                if col.name in have:
+                    continue
+                ddl = f'ALTER TABLE {table.name} ADD COLUMN {col.name} {_sql_type(col)}'
+                default = col.default.arg if col.default is not None and \
+                    not callable(getattr(col.default, "arg", None)) else None
+                if isinstance(default, bool):
+                    ddl += f" DEFAULT {1 if default else 0}"
+                elif isinstance(default, (int, float)):
+                    ddl += f" DEFAULT {default}"
+                elif isinstance(default, str):
+                    ddl += f" DEFAULT '{default}'"
+                try:
+                    conn.execute(text(ddl))
+                    log.info("migration: added %s.%s", table.name, col.name)
+                except Exception as exc:  # column may already exist on race
+                    log.debug("migration skip %s.%s: %s", table.name, col.name, exc)
 
 
 def existing_tables() -> list[str]:

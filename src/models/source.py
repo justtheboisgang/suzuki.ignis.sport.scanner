@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text
+from sqlalchemy import Boolean, DateTime, Float, Integer, String, Text, JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, created_column, updated_column
@@ -51,6 +51,21 @@ class Source(Base):
     typical_result_count: Mapped[int] = mapped_column(Integer, default=0)
     last_result_count: Mapped[int | None] = mapped_column(Integer)
     health: Mapped[str] = mapped_column(String(20), default="unknown")  # healthy/degraded/failed
+
+    # Ground-truth live status from a real fetch attempt (WORKING/BLOCKED/...).
+    live_status: Mapped[str] = mapped_column(String(24), default="UNKNOWN", index=True)
+    live_checked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    live_status_detail: Mapped[str | None] = mapped_column(String(300))
+
+    # Search-provider provenance: which providers surfaced this domain, and
+    # where (rank/page) it was first discovered.
+    discovered_by: Mapped[list | None] = mapped_column(JSON, default=list)
+    first_provider: Mapped[str | None] = mapped_column(String(24))
+    discovery_query: Mapped[str | None] = mapped_column(Text)
+    search_rank: Mapped[int | None] = mapped_column(Integer)
+    search_page: Mapped[int | None] = mapped_column(Integer)
+    is_aggregator: Mapped[bool] = mapped_column(Boolean, default=False)
+    seller_derived: Mapped[bool] = mapped_column(Boolean, default=False)
 
     def __repr__(self) -> str:  # pragma: no cover
         return f"<Source {self.domain} [{self.source_type}] {self.country}>"

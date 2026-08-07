@@ -46,8 +46,10 @@ class Classification(str, Enum):
     CONFIRMED_IGNIS_SPORT = "CONFIRMED_IGNIS_SPORT"
     LIKELY_IGNIS_SPORT = "LIKELY_IGNIS_SPORT"
     POSSIBLE_IGNIS_SPORT = "POSSIBLE_IGNIS_SPORT"
+    MISLABELLED_SPORT_CANDIDATE = "MISLABELLED_SPORT_CANDIDATE"
     UNCERTAIN = "UNCERTAIN"
     LIKELY_NOT_SPORT = "LIKELY_NOT_SPORT"
+    NORMAL_IGNIS = "NORMAL_IGNIS"
     NOT_IGNIS = "NOT_IGNIS"
 
 
@@ -58,6 +60,22 @@ class Provenance(str, Enum):
     FACT = "FACT"                  # parsed directly from the listing
     INFERRED = "INFERRED"          # deterministic inference from facts
     AI_INFERENCE = "AI_INFERENCE"  # produced by the Claude layer
+    UNKNOWN = "UNKNOWN"
+
+
+class SourceLiveStatus(str, Enum):
+    """Ground-truth status of a source after a real fetch attempt. A seed
+    source is never 'WORKING' just because it's on a static list."""
+
+    WORKING = "WORKING"
+    PARTIALLY_WORKING = "PARTIALLY_WORKING"
+    BLOCKED = "BLOCKED"
+    ROBOTS_DISALLOWED = "ROBOTS_DISALLOWED"
+    LOGIN_REQUIRED = "LOGIN_REQUIRED"
+    JS_REQUIRED = "JS_REQUIRED"
+    RATE_LIMITED = "RATE_LIMITED"
+    PARSER_BROKEN = "PARSER_BROKEN"
+    DEAD = "DEAD"
     UNKNOWN = "UNKNOWN"
 
 

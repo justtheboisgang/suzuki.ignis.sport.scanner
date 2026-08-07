@@ -190,16 +190,117 @@ Last-Modified) and sitemap/feed state avoid re-crawling everything each time.
 
 ---
 
-## Deployment
+## Real-world validation (Phase 17)
 
-**Docker (recommended):**
+The system is built to be proven on a real machine with unrestricted outbound
+internet. Key commands:
 
 ```bash
-cp .env.example .env    # configure
-docker compose up -d --build   # scheduler + dashboard, auto-restart
+# Prove connectivity/APIs/sources actually work on this host:
+python -m src.cli network-test
+
+# Multi-provider discovery (Brave AND optionally SerpApi, budget-guarded):
+python -m src.cli discover --max-queries 60
+
+# Give every source a GROUND-TRUTH status from a real fetch:
+python -m src.cli validate-sources
+
+# Per-country coverage gap audit (where to expand next):
+python -m src.cli audit-sources
+
+# The Real-World Validation Report (scan + discovery + vehicles + long-tail
+# wins + provider comparison + source failures):
+python -m src.cli real-report
 ```
 
-**systemd (bare metal):** install into `/opt/ignis-hunter`, create a venv, then:
+**Search providers** are multi-provider: Brave is the primary raw-web-results
+provider, SerpApi is an optional complementary Google index. Enable both with
+`SEARCH_PROVIDER_BRAVE_ENABLED=true` / `SEARCH_PROVIDER_SERPAPI_ENABLED=true`.
+Every discovered domain records **which provider(s)** surfaced it and at what
+**rank/page**, so `real-report` shows Brave-unique vs SerpApi-unique vs overlap.
+
+**Budgets** keep spend bounded and separate monitoring from discovery: listing
+monitoring of known sources runs ≥4×/day and uses **no** search API; source
+discovery runs ~1×/day within `BRAVE_MONTHLY_REQUEST_BUDGET` /
+`SERPAPI_MONTHLY_REQUEST_BUDGET` / `ANTHROPIC_MONTHLY_COST_BUDGET` (warn at 80%,
+stop non-critical calls at 100%). Query **rotation** favours high-yield and
+under-explored queries instead of re-running hundreds of near-identical ones.
+
+**Seller → Source expansion:** whenever a real listing is ingested — even from
+AutoScout/mobile/TheParking — the system tries to identify the seller's own
+dealer domain, registers it as a monitorable source, and stores the full
+provenance chain (`discovery_source → aggregator → original_marketplace →
+seller → dealer_domain → canonical_listing`).
+
+---
+
+## Deployment on a fresh Ubuntu/Debian VPS
+
+**1 — Exact deployment commands (fresh Ubuntu):**
+
+```bash
+git clone https://github.com/justtheboisgang/suzuki.ignis.sport.scanner
+cd suzuki.ignis.sport.scanner
+./scripts/setup_server.sh          # installs Docker, prepares .env, builds
+nano .env                          # add your keys (see below)
+```
+
+**2 — Environment variables you must set yourself** (in `.env`):
+- `ANTHROPIC_API_KEY` — enables the Claude intelligence layer.
+- `BRAVE_SEARCH_API_KEY` + `SEARCH_PROVIDER_BRAVE_ENABLED=true` — real discovery.
+- *(optional)* `SERPAPI_API_KEY` + `SEARCH_PROVIDER_SERPAPI_ENABLED=true`.
+- *(optional)* `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` for phone alerts.
+- Budgets/timezone as desired (sensible defaults ship in `.env.production.example`).
+
+**3 — External accounts / API keys to create:**
+- **Anthropic** — https://console.anthropic.com (for `ANTHROPIC_API_KEY`).
+- **Brave Search API** — https://brave.com/search/api/ (for `BRAVE_SEARCH_API_KEY`).
+- **SerpApi** *(optional)* — https://serpapi.com.
+- **Telegram bot** *(optional)* — via @BotFather.
+
+**4 — One command for network validation:**
+```bash
+sudo docker compose run --rm scheduler python -m src.cli network-test
+```
+
+**5 — One command for the first real full scan:**
+```bash
+sudo docker compose run --rm scheduler python -m src.cli scan --force
+```
+(Then discovery + report:
+`... python -m src.cli discover --max-queries 60` and `... real-report`.)
+
+**6 — One command to start the permanent service:**
+```bash
+sudo docker compose up -d
+```
+Both containers have `restart: unless-stopped` and healthchecks, so they come
+back after crashes and reboots.
+
+**7 — Dashboard URL/port:** `http://<SERVER_IP>:8000`
+(overview, listings, sources, health & coverage; liveness at `/healthz`).
+
+**8 — Verify the four daily scans are actually running:**
+```bash
+sudo docker compose logs scheduler | grep "full scan"     # job start lines
+sudo docker compose run --rm scheduler python -m src.cli stats
+# 'last_scan' timestamp + scan_runs advance after each 00/06/12/18 slot.
+```
+Scans are logged in the `scan_runs` table (one row per cycle) and on the
+dashboard's **Overview** ("Last scan …").
+
+**9 — Where to see logs and errors:**
+- `sudo docker compose logs -f scheduler` (live) and `logs -f dashboard`.
+- Persistent file log in the `ignis-logs` volume (`logs/ignis_hunter.log`).
+- Per-scan errors in `scan_runs.errors`; source problems on the **Health** page.
+
+**10 — Current real-world-validation status:** run
+`python -m src.cli real-report` — it prints exactly what was really fetched,
+discovered and classified (and says plainly if no Sport was found yet, without
+inventing one).
+
+**systemd alternative (no Docker):** install into `/opt/ignis-hunter`, create a
+venv (`python -m venv .venv && .venv/bin/pip install -r requirements.txt`), then:
 
 ```bash
 sudo cp deploy/ignis-hunter-*.service /etc/systemd/system/
@@ -208,8 +309,8 @@ sudo systemctl enable --now ignis-hunter-scheduler ignis-hunter-dashboard
 ```
 
 Both survive reboots and need no attached session. Playwright is optional and
-only needed for the small number of JS-only sources (flagged
-`requires_browser`); the core runs without a browser.
+only needed for the few JS-only sources (flagged `requires_browser`); the core
+runs without a browser.
 
 ---
 

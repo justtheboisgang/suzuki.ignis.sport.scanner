@@ -1,119 +1,248 @@
-"""The Source Discovery Engine.
+"""The Source Discovery Engine (Phase 17 edition).
 
-Runs periodically and asks, in effect: "Where might an Ignis Sport be for sale
-today that my system probably doesn't watch yet?" It:
-  1. generates multilingual queries (with an experimental slice),
-  2. runs them through the configured search provider (or no-op if none),
-  3. extracts new domains from the results,
-  4. classifies each via the AI Source Hunter (or heuristic fallback),
-  5. registers worthwhile ones as new sources and records query effectiveness.
-
-Everything degrades gracefully: with SEARCH_PROVIDER=none it still records the
-query catalogue and relies on seeds + sitemap discovery.
+Runs the search families through ALL enabled providers (Brave and/or SerpApi),
+de-duplicates URLs across providers, records per-provider provenance
+(`domain_discoveries`), classifies genuinely new domains via the Source Hunter,
+computes a Source Discovery Value, and registers worthwhile domains as sources —
+all under strict monthly request budgets and with query rotation so we don't
+waste budget re-running low-yield queries every day.
 """
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 
 from ..ai.source_hunter import assess_source
+from ..config.settings import get_settings
 from ..database.base import session_scope
 from ..models.discovery import DiscoveryQuery
+from ..models.provider import DomainDiscovery
 from ..models.source import Source
-from ..utils.hashing import domain_of
+from ..utils.hashing import domain_of, normalize_url
 from ..utils.logging import get_logger
-from .providers import get_search_provider
-from .queries import generate_queries
+from . import budget
+from .providers import get_multi_provider
+from .queries import BIG_PLATFORMS, generate_queries, GeneratedQuery
 
 log = get_logger("discovery.engine")
 
-# Domains that are already "known giants" — recorded but never treated as a
-# high-value new find.
 _KNOWN_BIG = {
-    "autoscout24.de", "mobile.de", "theparking.eu", "autouncle.com",
-    "ebay.com", "ebay.de", "facebook.com", "google.com", "youtube.com",
-    "wikipedia.org", "leboncoin.fr", "marktplaats.nl", "autotrader.co.uk",
+    "autoscout24.de", "autoscout24.com", "mobile.de", "theparking.eu",
+    "autouncle.com", "ebay.com", "ebay.de", "facebook.com", "google.com",
+    "youtube.com", "wikipedia.org", "leboncoin.fr", "marktplaats.nl",
+    "autotrader.co.uk", "instagram.com", "pinterest.com", "x.com", "twitter.com",
+    "reddit.com", "amazon.com", "gumtree.com",
 }
+
+
+def is_aggregator_domain(dom: str) -> bool:
+    return any(b in dom for b in BIG_PLATFORMS) or dom in _KNOWN_BIG
+
+
+def compute_source_discovery_value(dom: str, assessment, rank: int | None,
+                                   page: int | None, was_new: bool) -> int:
+    """Higher = a more valuable long-tail find. An independent dealer that isn't
+    already a big platform beats yet another aggregator page."""
+    if is_aggregator_domain(dom):
+        return 20
+    v = assessment.discovery_value or 50
+    # Independent dealer / Suzuki / youngtimer specialists are the prize.
+    if assessment.source_type in ("dealer", "suzuki_dealer", "youngtimer_dealer",
+                                  "enthusiast_dealer", "garage"):
+        v += 15
+    if assessment.is_suzuki_dealer:
+        v += 10
+    if assessment.handles_japanese:
+        v += 5
+    # Discovered deep in the results (rank/page) → less obvious → more valuable.
+    if rank and rank > 20:
+        v += 8
+    if page and page > 1:
+        v += 5
+    if was_new:
+        v += 5
+    return max(0, min(100, v))
+
+
+@dataclass
+class DiscoverySummary:
+    queries_planned: int = 0
+    queries_run: int = 0
+    providers: list = field(default_factory=list)
+    new_domains: int = 0
+    domains_assessed: int = 0
+    sources_added: int = 0
+    per_provider_new: dict = field(default_factory=dict)
+    budget_states: dict = field(default_factory=dict)
+    skipped_budget: bool = False
+
+    def as_dict(self) -> dict:
+        return self.__dict__
+
+
+def select_queries(gen: list[GeneratedQuery], max_queries: int) -> list[GeneratedQuery]:
+    """Rotation: rank queries by (high-value, historical yield, staleness) so
+    budget goes to productive and under-explored queries, not daily repeats."""
+    now = datetime.now(timezone.utc)
+    scored: list[tuple[float, GeneratedQuery]] = []
+    with session_scope() as s:
+        for gq in gen:
+            row = (s.query(DiscoveryQuery)
+                   .filter(DiscoveryQuery.query == gq.query,
+                           DiscoveryQuery.country == gq.country).first())
+            score = 0.0
+            if gq.high_value:
+                score += 3.0
+            if gq.family in ("B", "E"):  # mislabelled + chassis: prized
+                score += 2.0
+            if row is None:
+                score += 4.0  # never tried → explore
+            else:
+                yield_rate = row.new_domains_found / max(1, row.run_count)
+                score += min(5.0, yield_rate * 2.0)
+                if row.last_run_at:
+                    last = row.last_run_at
+                    if last.tzinfo is None:
+                        last = last.replace(tzinfo=timezone.utc)
+                    hours = (now - last).total_seconds() / 3600
+                    score += min(3.0, hours / 24)          # staleness bonus
+                    if hours < 20:
+                        score -= 5.0                        # ran very recently
+                if row.run_count >= 5 and row.new_domains_found == 0:
+                    score -= 3.0                            # persistently barren
+            if gq.experimental:
+                score += 0.5
+            scored.append((score, gq))
+    scored.sort(key=lambda t: t[0], reverse=True)
+    return [gq for _, gq in scored[:max_queries]]
 
 
 class DiscoveryEngine:
     def __init__(self, settings=None):
-        self.provider = get_search_provider(settings)
+        self.settings = settings or get_settings()
+        self.multi = get_multi_provider(self.settings)
 
     def _existing_domains(self, session) -> set[str]:
         return {d for (d,) in session.query(Source.domain).all()}
 
     def run(self, countries: list[str] | None = None, max_queries: int = 40,
-            experimental_ratio: float = 0.2) -> dict:
-        """Execute a discovery pass. Returns a summary dict."""
-        gen = generate_queries(countries, experimental_ratio=experimental_ratio)
-        gen = gen[:max_queries]
+            families: str = "ABCDEFG", experimental_ratio: float = 0.2) -> dict:
+        summary = DiscoverySummary(providers=self.multi.names)
+        summary.budget_states = budget.all_budget_states()
+
+        gen = generate_queries(countries, families=families,
+                               provider=(self.multi.names[0] if self.multi.names
+                                         else "generic"),
+                               experimental_ratio=experimental_ratio)
+        planned = select_queries(gen, max_queries)
+        summary.queries_planned = len(planned)
+
+        if not self.multi.available:
+            # No provider configured: still record the query catalogue so the
+            # system is transparent about what it *would* search.
+            self._record_queries_only(planned)
+            log.info("Discovery: no search provider enabled — recorded %d "
+                     "queries only (configure Brave/SerpApi to go live).",
+                     len(planned))
+            return summary.as_dict()
+
         new_domains: set[str] = set()
-        assessed = 0
-        added_sources = 0
 
         with session_scope() as session:
             known = self._existing_domains(session)
+            for gq in planned:
+                # Budget check across providers before spending on this query.
+                if not any(budget.can_request(p, 1) for p in self.multi.names):
+                    summary.skipped_budget = True
+                    log.warning("All search budgets exhausted; stopping discovery.")
+                    break
 
-            for gq in gen:
-                dq = (session.query(DiscoveryQuery)
-                      .filter(DiscoveryQuery.query == gq.query,
-                              DiscoveryQuery.country == gq.country).first())
-                if not dq:
-                    dq = DiscoveryQuery(query=gq.query, country=gq.country,
-                                        language=gq.language,
-                                        provider=self.provider.name,
-                                        experimental=gq.experimental)
-                    session.add(dq)
-                    session.flush()
+                pages = (self.settings.search_pages_high_value if gq.high_value
+                         else self.settings.search_pages_default)
+                res = self.multi.search(gq.query, pages=pages, country=gq.country,
+                                        language=gq.language)
+                summary.queries_run += 1
 
-                hits = self.provider.search(gq.query, count=20, country=gq.country)
-                dq.last_run_at = datetime.now(timezone.utc)
-                dq.run_count += 1
-                dq.result_count = len(hits)
+                dq = self._upsert_query(session, gq, result_count=len(res.hits))
+                query_new = 0
 
-                query_new_domains = 0
-                for hit in hits:
+                for hit in res.hits:
                     dom = domain_of(hit.url)
-                    if not dom or dom in known or dom in _KNOWN_BIG:
+                    if not dom:
+                        continue
+                    providers = sorted(
+                        res.providers_by_url.get(normalize_url(hit.url), set()))
+                    was_new = dom not in known and not is_aggregator_domain(dom)
+
+                    # Provenance row for provider comparison (every hit).
+                    for prov in (providers or [hit.provider]):
+                        session.add(DomainDiscovery(
+                            domain=dom, provider=prov, query=gq.query,
+                            country=gq.country, rank=hit.rank, page=hit.page,
+                            url=hit.url[:1000], was_new=was_new))
+
+                    if dom in known or is_aggregator_domain(dom):
                         continue
                     known.add(dom)
                     new_domains.add(dom)
-                    query_new_domains += 1
+                    query_new += 1
+                    for prov in (providers or [hit.provider]):
+                        summary.per_provider_new[prov] = \
+                            summary.per_provider_new.get(prov, 0) + 1
 
-                    # Classify the newly found domain.
                     assessment = assess_source(dom, snippet=hit.snippet,
                                                country=gq.country)
-                    assessed += 1
+                    summary.domains_assessed += 1
                     if assessment.is_relevant:
+                        dv = compute_source_discovery_value(
+                            dom, assessment, hit.rank, hit.page, was_new)
                         session.add(Source(
-                            domain=dom,
-                            name=hit.title[:120] or dom,
+                            domain=dom, name=hit.title[:120] or dom,
                             country=assessment.country or gq.country,
                             language=assessment.language or gq.language,
                             source_type=assessment.source_type,
                             base_url=f"https://{dom}/",
-                            discovery_method=f"search:{self.provider.name}",
-                            discovery_value=assessment.discovery_value,
-                            priority=assessment.priority,
+                            discovery_method=f"search:{'+'.join(providers) or hit.provider}",
+                            discovery_value=dv, priority=assessment.priority,
                             parser_type=assessment.recommended_parser,
                             requires_browser=assessment.requires_browser,
                             manual_review=not assessment.automatable,
                             notes=assessment.reasoning[:500],
-                        ))
-                        added_sources += 1
+                            discovered_by=providers or [hit.provider],
+                            first_provider=(providers or [hit.provider])[0],
+                            discovery_query=gq.query, search_rank=hit.rank,
+                            search_page=hit.page,
+                            is_aggregator=is_aggregator_domain(dom)))
+                        summary.sources_added += 1
 
-                dq.new_domains_found += query_new_domains
-                # Simple effectiveness: reward queries that surface new domains.
+                dq.new_domains_found += query_new
                 dq.effectiveness_score = round(
-                    0.7 * dq.effectiveness_score + 0.3 * query_new_domains, 3)
+                    0.7 * dq.effectiveness_score + 0.3 * query_new, 3)
 
-        summary = {
-            "queries_run": len(gen),
-            "provider": self.provider.name,
-            "new_domains": len(new_domains),
-            "domains_assessed": assessed,
-            "sources_added": added_sources,
-        }
-        log.info("Discovery pass: %s", summary)
-        return summary
+        summary.new_domains = len(new_domains)
+        summary.budget_states = budget.all_budget_states()
+        log.info("Discovery pass: %s", summary.as_dict())
+        return summary.as_dict()
+
+    def _upsert_query(self, session, gq: GeneratedQuery, result_count: int
+                      ) -> DiscoveryQuery:
+        dq = (session.query(DiscoveryQuery)
+              .filter(DiscoveryQuery.query == gq.query,
+                      DiscoveryQuery.country == gq.country).first())
+        if not dq:
+            dq = DiscoveryQuery(query=gq.query, country=gq.country,
+                                language=gq.language,
+                                provider="+".join(self.multi.names) or "none",
+                                experimental=gq.experimental)
+            session.add(dq)
+            session.flush()
+        dq.last_run_at = datetime.now(timezone.utc)
+        dq.run_count += 1
+        dq.result_count = result_count
+        return dq
+
+    def _record_queries_only(self, planned: list[GeneratedQuery]) -> None:
+        with session_scope() as session:
+            for gq in planned:
+                self._upsert_query(session, gq, result_count=0)

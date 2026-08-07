@@ -74,6 +74,36 @@ def cmd_backup(args):
     print(f"Backup written to {path}" if path else "No SQLite DB to back up.")
 
 
+def cmd_network_test(args):
+    from .network.validate import run_network_test
+    run_network_test(probe_sources=not args.no_sources)
+
+
+def cmd_validate_sources(args):
+    from .pipeline.validation import validate_sources
+    summary = validate_sources(limit=args.limit, country=args.country)
+    print(json.dumps(summary, indent=2, default=str))
+
+
+def cmd_audit_sources(args):
+    from .pipeline.validation import audit_sources
+    rows = audit_sources()
+    print(f"{'Country':<18}{'Total':>6}{'Working':>8}  Missing categories")
+    print("-" * 70)
+    for r in rows:
+        print(f"{r['country']:<18}{r['total_sources']:>6}{r['working']:>8}  "
+              f"{', '.join(r['missing_categories']) or '—'}")
+
+
+def cmd_real_report(args):
+    from .pipeline.reporting import build_report, print_report
+    rep = build_report()
+    if args.json:
+        print(json.dumps(rep, indent=2, default=str))
+    else:
+        print_report(rep)
+
+
 def cmd_stats(args):
     from .database.base import SessionLocal
     from .dashboard import queries as Q
@@ -180,6 +210,22 @@ def build_parser() -> argparse.ArgumentParser:
     sub.add_parser("backup", help="back up the database").set_defaults(func=cmd_backup)
     sub.add_parser("stats", help="print JSON stats").set_defaults(func=cmd_stats)
     sub.add_parser("report", help="print initial discovery report").set_defaults(func=cmd_report)
+
+    sp = sub.add_parser("network-test", help="validate real network/API/source connectivity")
+    sp.add_argument("--no-sources", action="store_true", help="skip probing sample sources")
+    sp.set_defaults(func=cmd_network_test)
+
+    sp = sub.add_parser("validate-sources", help="fetch each source and record live status")
+    sp.add_argument("--limit", type=int, default=None)
+    sp.add_argument("--country", default=None)
+    sp.set_defaults(func=cmd_validate_sources)
+
+    sub.add_parser("audit-sources", help="per-country source-coverage gap audit")\
+        .set_defaults(func=cmd_audit_sources)
+
+    sp = sub.add_parser("real-report", help="print the Real-World Validation Report")
+    sp.add_argument("--json", action="store_true")
+    sp.set_defaults(func=cmd_real_report)
     return p
 
 

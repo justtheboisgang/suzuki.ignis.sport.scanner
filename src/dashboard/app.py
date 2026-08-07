@@ -176,6 +176,19 @@ def create_app() -> FastAPI:
         from ..pipeline.scan import run_discovery
         return JSONResponse(run_discovery(max_queries=max_queries))
 
+    @app.get("/healthz")
+    def healthz():
+        """Liveness probe for Docker/systemd — confirms the DB is reachable."""
+        s = db()
+        try:
+            s.query(Source).count()
+            return JSONResponse({"status": "ok"})
+        except Exception as exc:  # pragma: no cover
+            return JSONResponse({"status": "error", "detail": str(exc)},
+                                status_code=500)
+        finally:
+            s.close()
+
     @app.get("/api/stats")
     def api_stats():
         s = db()

@@ -64,6 +64,16 @@ class Listing(Base):
     alternate_urls: Mapped[list | None] = mapped_column(JSON, default=list)
     source_id: Mapped[int | None] = mapped_column(ForeignKey("sources.id"), index=True)
 
+    # Full provenance chain (reverse source discovery):
+    #   discovery_source → aggregator → original_marketplace → seller/dealer.
+    discovery_source: Mapped[str | None] = mapped_column(String(80))   # e.g. brave/seed/manual
+    discovered_by_provider: Mapped[str | None] = mapped_column(String(24))
+    aggregator: Mapped[str | None] = mapped_column(String(120))
+    original_marketplace: Mapped[str | None] = mapped_column(String(120))
+    dealer_domain: Mapped[str | None] = mapped_column(String(160))
+    canonical_listing_url: Mapped[str | None] = mapped_column(String(1000))
+    is_long_tail: Mapped[bool] = mapped_column(default=False, index=True)
+
     first_seen_at: Mapped[datetime] = created_column()
     last_seen_at: Mapped[datetime] = updated_column()
     last_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))

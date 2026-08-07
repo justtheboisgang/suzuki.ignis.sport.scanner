@@ -22,5 +22,8 @@ COPY . .
 RUN useradd -m hunter && mkdir -p data logs && chown -R hunter:hunter /app
 USER hunter
 
+# Initialise DB + seed sources at build time is avoided (needs the volume);
+# the entrypoint commands call init on start instead.
+
 # Default command runs the scheduler (override to run the dashboard).
 CMD ["python", "-m", "src.cli", "scheduler"]

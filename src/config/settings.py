@@ -57,6 +57,22 @@ class Settings(BaseSettings):
     google_cse_key: str | None = Field(default=None, alias="GOOGLE_CSE_KEY")
     bing_api_key: str | None = Field(default=None, alias="BING_API_KEY")
 
+    # Preferred, explicit multi-provider config (Brave AND optionally SerpApi).
+    brave_search_api_key: str | None = Field(default=None, alias="BRAVE_SEARCH_API_KEY")
+    serpapi_api_key: str | None = Field(default=None, alias="SERPAPI_API_KEY")
+    provider_brave_enabled: bool = Field(default=False, alias="SEARCH_PROVIDER_BRAVE_ENABLED")
+    provider_serpapi_enabled: bool = Field(default=False, alias="SEARCH_PROVIDER_SERPAPI_ENABLED")
+
+    # Monthly budgets. 0 disables the guard.
+    brave_monthly_request_budget: int = Field(default=2000, alias="BRAVE_MONTHLY_REQUEST_BUDGET")
+    serpapi_monthly_request_budget: int = Field(default=100, alias="SERPAPI_MONTHLY_REQUEST_BUDGET")
+    anthropic_monthly_cost_budget: float | None = Field(
+        default=None, alias="ANTHROPIC_MONTHLY_COST_BUDGET")
+
+    # How deep to paginate. High-value (chassis/exact) queries may go deeper.
+    search_pages_default: int = Field(default=1, alias="SEARCH_PAGES_DEFAULT")
+    search_pages_high_value: int = Field(default=3, alias="SEARCH_PAGES_HIGH_VALUE")
+
     # --- Crawler ----------------------------------------------------------
     user_agent: str = Field(
         default="IgnisSportHunter/1.0 (+https://github.com/justtheboisgang/suzuki.ignis.sport.scanner)",
@@ -111,6 +127,41 @@ class Settings(BaseSettings):
     @property
     def notify_channel_list(self) -> list[str]:
         return [c.strip().lower() for c in self.notify_channels.split(",") if c.strip()]
+
+    # --- Search provider resolution (new explicit vars win, old ones are a
+    #     backward-compatible fallback) -----------------------------------
+    @property
+    def brave_key(self) -> str | None:
+        return self.brave_search_api_key or self.brave_api_key
+
+    @property
+    def serpapi_key_resolved(self) -> str | None:
+        return self.serpapi_api_key or self.serpapi_key
+
+    @property
+    def anthropic_budget(self) -> float:
+        """Effective monthly AI cost budget (new var overrides the old one)."""
+        if self.anthropic_monthly_cost_budget is not None:
+            return self.anthropic_monthly_cost_budget
+        return self.ai_monthly_budget_usd
+
+    def enabled_providers(self) -> list[str]:
+        """Names of search providers that are both enabled AND have a key.
+        Supports Brave AND SerpApi simultaneously (multi-provider)."""
+        out: list[str] = []
+        brave_on = self.provider_brave_enabled or (
+            self.search_provider or "").lower() == "brave"
+        serp_on = self.provider_serpapi_enabled or (
+            self.search_provider or "").lower() == "serpapi"
+        if brave_on and self.brave_key:
+            out.append("brave")
+        if serp_on and self.serpapi_key_resolved:
+            out.append("serpapi")
+        # Google CSE remains available via the legacy single-provider path.
+        if not out and (self.search_provider or "").lower() == "google_cse" \
+                and self.google_cse_id and self.google_cse_key:
+            out.append("google_cse")
+        return out
 
     @property
     def ai_enabled(self) -> bool:

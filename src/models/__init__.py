@@ -8,6 +8,7 @@ from .enums import (
     Classification,
     Provenance,
     FeedbackLabel,
+    SourceLiveStatus,
 )
 from .source import Source
 from .listing import Listing
@@ -16,6 +17,7 @@ from .discovery import DiscoveryQuery
 from .ai_usage import AIUsage
 from .scan import ScanRun
 from .feedback import Feedback, Notification
+from .provider import ProviderUsage, DomainDiscovery
 
 __all__ = [
     "Base",
@@ -25,6 +27,7 @@ __all__ = [
     "Classification",
     "Provenance",
     "FeedbackLabel",
+    "SourceLiveStatus",
     "Source",
     "Listing",
     "ListingSnapshot",
@@ -35,4 +38,6 @@ __all__ = [
     "ScanRun",
     "Feedback",
     "Notification",
+    "ProviderUsage",
+    "DomainDiscovery",
 ]
