@@ -59,6 +59,39 @@ def cmd_scheduler(args):
     run_forever()
 
 
+def cmd_serve(args):
+    """Single-process production entrypoint (for Railway / any PaaS):
+    initialise + migrate the DB, seed sources, start the background scheduler
+    (the 4x/day scans etc.), then serve the dashboard on 0.0.0.0:$PORT.
+
+    Everything runs in ONE service; no second worker, no external cron.
+    """
+    import os
+    import uvicorn
+
+    settings = get_settings()
+    # 1-2. DB present? initialise + run migrations. 3. scheduler. Both are done
+    # by build_scheduler (which calls init_db + seed_sources_into_db).
+    from .scheduler.runner import build_scheduler
+    scheduler = build_scheduler(blocking=False)
+    scheduler.start()  # background thread: keeps the 4 daily scans alive
+    log.info("Scheduler started in background (%d jobs).",
+             len(scheduler.get_jobs()))
+
+    # 4-5. Dashboard in the foreground keeps the process (and scheduler) alive.
+    port = int(os.environ.get("PORT") or args.port or settings.dashboard_port)
+    log.info("Serving dashboard on http://0.0.0.0:%d (scheduler running).", port)
+    try:
+        uvicorn.run("src.dashboard.app:app", host="0.0.0.0", port=port,
+                    reload=False, log_level="info")
+    finally:
+        # 6. Clean shutdown on restart/stop.
+        try:
+            scheduler.shutdown(wait=False)
+        except Exception:
+            pass
+
+
 def cmd_add_source(args):
     from .pipeline.manual import add_watch_source
     print(json.dumps(add_watch_source(args.url, country=args.country), indent=2, default=str))
@@ -196,6 +229,11 @@ def build_parser() -> argparse.ArgumentParser:
     sp.set_defaults(func=cmd_dashboard)
 
     sub.add_parser("scheduler", help="run long-running scheduler").set_defaults(func=cmd_scheduler)
+
+    sp = sub.add_parser("serve", help="ONE-service production mode: scheduler + "
+                                      "dashboard together (Railway/PaaS)")
+    sp.add_argument("--port", type=int, default=None)
+    sp.set_defaults(func=cmd_serve)
 
     sp = sub.add_parser("add-source", help="add + scan a source URL")
     sp.add_argument("url")

@@ -1,0 +1,19 @@
+# Railway deployment config — ONE service running scheduler + dashboard together.
+# Railway injects $PORT (the dashboard binds 0.0.0.0:$PORT automatically) and
+# mounts the persistent volume at /app/data (where the SQLite DB lives).
+
+[build]
+builder = "DOCKERFILE"
+dockerfilePath = "Dockerfile"
+
+[deploy]
+# Single-process entrypoint: initialises + migrates the DB, seeds sources,
+# starts the background scheduler (4 daily scans) and serves the dashboard.
+startCommand = "python -m src.cli serve"
+# Railway probes this path on the service port; /healthz confirms the DB works.
+healthcheckPath = "/healthz"
+healthcheckTimeout = 300
+# Auto-recover after crashes / on restart.
+restartPolicyType = "ON_FAILURE"
+restartPolicyMaxRetries = 10
+numReplicas = 1

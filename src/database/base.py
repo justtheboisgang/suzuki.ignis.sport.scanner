@@ -15,8 +15,11 @@ from ..config.settings import get_settings
 _settings = get_settings()
 _url = _settings.resolved_database_url()
 
-# check_same_thread only matters for SQLite; harmless to pass conditionally.
-_connect_args = {"check_same_thread": False} if _url.startswith("sqlite") else {}
+# check_same_thread only matters for SQLite; `timeout` makes writers wait for a
+# lock (busy handler) instead of failing immediately — important when the
+# dashboard and scheduler share one SQLite file in a single Railway service.
+_connect_args = ({"check_same_thread": False, "timeout": 30}
+                 if _url.startswith("sqlite") else {})
 
 engine: Engine = create_engine(
     _url,
@@ -32,9 +35,10 @@ def _sqlite_pragmas(dbapi_conn, _):  # pragma: no cover - driver level
     don't block the scheduler's writes."""
     if _url.startswith("sqlite"):
         cur = dbapi_conn.cursor()
-        cur.execute("PRAGMA journal_mode=WAL;")
+        cur.execute("PRAGMA journal_mode=WAL;")        # concurrent read+write
         cur.execute("PRAGMA foreign_keys=ON;")
         cur.execute("PRAGMA synchronous=NORMAL;")
+        cur.execute("PRAGMA busy_timeout=15000;")      # wait up to 15s for locks
         cur.close()
 
 

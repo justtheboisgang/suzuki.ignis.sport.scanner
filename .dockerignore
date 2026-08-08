@@ -1,0 +1,25 @@
+# Keep the image lean and never bake in local data or secrets.
+.git
+.gitignore
+.venv
+venv
+env
+__pycache__
+**/__pycache__
+*.pyc
+.pytest_cache
+.ruff_cache
+.mypy_cache
+
+# Never copy local database, logs or secrets into the image.
+.env
+*.env
+!.env.production.example
+data/
+logs/
+
+# Dev-only.
+tests/
+docs/
+*.md
+!README.md

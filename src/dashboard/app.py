@@ -24,6 +24,35 @@ from . import queries as Q
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 
+# Single-flight guard so a manual scan/discovery kicked off from the dashboard
+# runs in the background and can't overlap itself.
+import threading  # noqa: E402
+
+from ..utils.logging import get_logger  # noqa: E402
+
+_log = get_logger("dashboard")
+_job_lock = threading.Lock()
+
+
+def _run_in_background(name: str, fn) -> bool:
+    """Start `fn` in a daemon thread if no manual job is already running.
+    Returns True if started, False if one was already in progress."""
+    if not _job_lock.acquire(blocking=False):
+        return False
+
+    def _worker():
+        try:
+            _log.info("manual %s job started", name)
+            result = fn()
+            _log.info("manual %s job finished: %s", name, result)
+        except Exception as exc:  # never crash the web process
+            _log.warning("manual %s job failed: %s", name, exc)
+        finally:
+            _job_lock.release()
+
+    threading.Thread(target=_worker, name=f"manual-{name}", daemon=True).start()
+    return True
+
 
 def create_app() -> FastAPI:
     app = FastAPI(title="Suzuki Ignis Sport Europe Hunter")
@@ -169,12 +198,22 @@ def create_app() -> FastAPI:
     @app.post("/run-scan")
     def trigger_scan(limit: int = Form(20)):
         from ..pipeline.scan import run_scan
-        return JSONResponse(run_scan(limit=limit, force=True, backup=False))
+        started = _run_in_background(
+            "scan", lambda: run_scan(limit=limit, force=True, backup=False))
+        return JSONResponse({"started": started,
+                             "note": "Scan running in background; refresh the "
+                                     "overview in a minute." if started
+                                     else "A job is already running."})
 
     @app.post("/run-discovery")
     def trigger_discovery(max_queries: int = Form(30)):
         from ..pipeline.scan import run_discovery
-        return JSONResponse(run_discovery(max_queries=max_queries))
+        started = _run_in_background(
+            "discovery", lambda: run_discovery(max_queries=max_queries))
+        return JSONResponse({"started": started,
+                             "note": "Discovery running in background; refresh in "
+                                     "a minute." if started
+                                     else "A job is already running."})
 
     @app.get("/healthz")
     def healthz():
