@@ -12,7 +12,15 @@ from .schemas import (
     SourceAssessment,
     ListingAnalysis,
     ImageVerdict,
+    VisionVerdict,
     ParserDiagnosis,
+)
+from .vision import (
+    analyze_vehicle_images,
+    should_run_vision,
+    select_vision_images,
+    merge_vision,
+    vision_cache_key,
 )
 from .vehicle_detective import analyze_candidate
 from .source_hunter import assess_source
@@ -33,4 +41,10 @@ __all__ = [
     "analyze_listing",
     "analyze_images",
     "diagnose_parser",
+    "VisionVerdict",
+    "analyze_vehicle_images",
+    "should_run_vision",
+    "select_vision_images",
+    "merge_vision",
+    "vision_cache_key",
 ]

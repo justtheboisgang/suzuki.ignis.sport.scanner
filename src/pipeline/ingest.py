@@ -14,7 +14,15 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
 from ..ai.listing_analyst import analyze_listing
+from ..ai.schemas import VisionVerdict
 from ..ai.vehicle_detective import analyze_candidate
+from ..ai.vision import (
+    analyze_vehicle_images,
+    merge_vision,
+    should_run_vision,
+    vision_cache_key,
+)
+from ..database.base import session_scope
 from ..classification.confidence import score_confidence
 from ..classification.prefilter import prefilter
 from ..config.settings import get_settings
@@ -36,7 +44,7 @@ from ..scoring.opportunity import compute_opportunity
 from ..utils.hashing import content_hash, normalize_url, stable_id
 from ..utils.lhd_rhd import infer_lhd_rhd
 from ..utils.logging import get_logger
-from .expansion import expand_seller_to_source, set_provenance
+from .expansion import expand_seller_to_source, finalize_links, set_provenance
 
 log = get_logger("pipeline.ingest")
 
@@ -105,16 +113,47 @@ def process_candidate(raw: RawListing, source: Source | None) -> IngestResult:
     is_sport_candidate = confidence >= settings.match_confidence_threshold
     seller_type = _seller_type(raw, source)
 
+    # Compute perceptual hashes when we'll need them for dedup OR for vision on
+    # an ambiguous / bare-Ignis candidate.
+    run_vision = should_run_vision(pf.bucket, bool(raw.images))
     image_hashes = (perceptual_hashes(raw.images)
-                    if is_sport_candidate and raw.images else [])
+                    if (is_sport_candidate or run_vision) and raw.images else [])
+
+    # --- Claude Vision verification (ambiguous candidates only, cached) ---
+    vision_verdict = None
+    vision_reused = False
+    if run_vision:
+        cache_key = vision_cache_key(raw.images, image_hashes)
+        prior = _load_existing_vision(internal)
+        if prior and prior.get("vision_image_hash") == cache_key and prior.get("verdict"):
+            vision_verdict = VisionVerdict(**prior["verdict"])
+            vision_reused = True
+        else:
+            vision_verdict = analyze_vehicle_images(
+                raw.images, image_hashes, target_id=internal)
+        has_hard_negative = bool(pf.negative_signals) or \
+            (raw.displacement_cc is not None and raw.displacement_cc < 1400) or \
+            (raw.year is not None and raw.year >= 2015)
+        merged = merge_vision(confidence, pf.bucket, pf.other_model,
+                              has_hard_negative, vision_verdict)
+        if not vision_verdict.is_fallback:
+            confidence = merged["final_confidence"]
+            if merged["classification"]:
+                classification = merged["classification"]
+            if merged["reasons"]:
+                log.info("vision(%s) %s -> conf %d", internal[:8],
+                         "cache" if vision_reused else "api", confidence)
+
+    is_sport_candidate = confidence >= settings.match_confidence_threshold
 
     analysis = None
-    if is_sport_candidate and confidence >= 70:
+    if is_sport_candidate and confidence >= 70 and classification != "DATA_CONFLICT":
         analysis = analyze_listing(raw.title, raw.description or raw.raw_text or "",
                                    country=raw.country, seller_type=seller_type,
                                    target_id=internal)
 
-    if pf.needs_ai and is_sport_candidate:
+    if pf.needs_ai and is_sport_candidate and classification not in (
+            "DATA_CONFLICT",):
         classification = "MISLABELLED_SPORT_CANDIDATE"
 
     # Precompute plain column values so the write callable is retry-safe.
@@ -130,6 +169,24 @@ def process_candidate(raw: RawListing, source: Source | None) -> IngestResult:
         ai_analysis = {"detective": ai_verdict.model_dump()}
     if analysis is not None:
         ai_analysis = {**(ai_analysis or {}), "analyst": analysis.model_dump()}
+
+    # Vision columns (only when a non-fallback verdict was produced/reused).
+    vision_kwargs = {}
+    if run_vision and vision_verdict is not None and not vision_verdict.is_fallback:
+        vision_kwargs = dict(
+            vision_analyzed=True,
+            vision_model=(get_settings().anthropic_model),
+            vision_analyzed_at=datetime.now(timezone.utc),
+            vision_image_hash=vision_cache_key(raw.images, image_hashes),
+            vehicle_identity_confidence=vision_verdict.vehicle_identity_confidence,
+            ignis_confidence=vision_verdict.ignis_confidence,
+            ignis_sport_visual_confidence=vision_verdict.ignis_sport_visual_confidence,
+            visible_positive_signals=vision_verdict.visible_positive_signals,
+            visible_negative_signals=vision_verdict.visible_negative_signals,
+            vision_uncertainties=vision_verdict.uncertainties,
+            visual_summary=vision_verdict.visual_summary,
+            vision_conflict=(classification == "DATA_CONFLICT"),
+        )
 
     kwargs = dict(
         internal_id=internal, title=normalize_text(raw.title)[:500],
@@ -158,6 +215,7 @@ def process_candidate(raw: RawListing, source: Source | None) -> IngestResult:
         image_hashes=image_hashes, vehicle_match_confidence=confidence,
         source_confidence=(source.discovery_value if source else 50),
         classification=classification, ai_analysis=ai_analysis,
+        **vision_kwargs,
     )
 
     source_id = source.id if source else None
@@ -182,6 +240,8 @@ def process_candidate(raw: RawListing, source: Source | None) -> IngestResult:
                 expand_seller_to_source(session, candidate, source)
             except Exception as exc:  # expansion must never break ingestion
                 log.debug("seller expansion failed: %s", exc)
+        # Recompute links now that dealer_domain/alternate URLs may be set.
+        finalize_links(candidate)
         if analysis is not None:
             _apply_analysis(candidate, analysis)
         _rescore(candidate)
@@ -229,6 +289,7 @@ def _update_existing(session, existing: Listing, candidate: Listing,
     existing.last_verified_at = now
     dealer = bool(source and source.source_type in _DEALER_TYPES)
     merge_into(existing, candidate, candidate_is_dealer=dealer)
+    finalize_links(existing)  # keep canonical/original pointing at a real listing
     _rescore(existing)
     return price_changed
 
@@ -262,3 +323,25 @@ def _rescore(listing: Listing) -> None:
 def _record_status(session, listing, old, new, note):
     session.add(StatusHistory(listing_id=listing.id, old_status=old,
                               new_status=new, note=note))
+
+
+def _load_existing_vision(internal_id: str) -> dict | None:
+    """Return {vision_image_hash, verdict} for a stored listing, so unchanged
+    images are never re-sent to Claude Vision (cost control)."""
+    with session_scope() as s:
+        row = s.query(Listing).filter(Listing.internal_id == internal_id).first()
+        if not row or not row.vision_analyzed or not row.vision_image_hash:
+            return None
+        return {
+            "vision_image_hash": row.vision_image_hash,
+            "verdict": {
+                "vehicle_identity_confidence": row.vehicle_identity_confidence or 0,
+                "ignis_confidence": row.ignis_confidence or 0,
+                "ignis_sport_visual_confidence": row.ignis_sport_visual_confidence or 0,
+                "visible_positive_signals": row.visible_positive_signals or [],
+                "visible_negative_signals": row.visible_negative_signals or [],
+                "uncertainties": row.vision_uncertainties or [],
+                "visual_summary": row.visual_summary or "",
+                "is_fallback": False,
+            },
+        }

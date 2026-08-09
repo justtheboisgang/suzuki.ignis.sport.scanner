@@ -47,6 +47,47 @@ def normalize_url(url: str) -> str:
     return urlunparse((p.scheme or "https", netloc, path, "", urlencode(query), ""))
 
 
+def is_specific_url(url: str | None) -> bool:
+    """True if the URL points at a specific page (has a real path or query),
+    not a bare homepage like https://dealer.com/ . Used to guarantee we never
+    store a homepage as the canonical/original vehicle link when a concrete
+    listing URL is known."""
+    if not url:
+        return False
+    try:
+        p = urlparse(url if "//" in url else f"https://{url}")
+    except ValueError:
+        return False
+    path = (p.path or "").strip("/")
+    return bool(path) or bool(p.query)
+
+
+def pick_canonical(urls: list[str] | None, dealer_domain: str | None = None,
+                   aggregators: tuple[str, ...] = ()) -> str | None:
+    """Choose the best concrete vehicle URL from candidates.
+
+    Preference: dealer-direct specific listing → any specific non-aggregator
+    listing → any specific listing → first URL as a last resort. A homepage is
+    only ever chosen if nothing more specific exists.
+    """
+    cands = [u for u in (urls or []) if u]
+    if not cands:
+        return None
+    specific = [u for u in cands if is_specific_url(u)]
+
+    if dealer_domain:
+        for u in specific:
+            if domain_of(u) == dealer_domain:
+                return u
+    non_agg = [u for u in specific
+               if not any(a in domain_of(u) for a in aggregators)]
+    if non_agg:
+        return non_agg[0]
+    if specific:
+        return specific[0]
+    return cands[0]
+
+
 def domain_of(url: str) -> str:
     """Registered-ish domain (host without leading www)."""
     try:

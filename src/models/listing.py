@@ -113,6 +113,20 @@ class Listing(Base):
     ai_analysis: Mapped[dict | None] = mapped_column(JSON)
     score_explanation: Mapped[dict | None] = mapped_column(JSON)
 
+    # --- Claude Vision verification (only for ambiguous Ignis candidates) --
+    vision_analyzed: Mapped[bool] = mapped_column(default=False)
+    vision_model: Mapped[str | None] = mapped_column(String(80))
+    vision_analyzed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    vision_image_hash: Mapped[str | None] = mapped_column(String(64))  # cache key
+    vehicle_identity_confidence: Mapped[int | None] = mapped_column(Integer)
+    ignis_confidence: Mapped[int | None] = mapped_column(Integer)
+    ignis_sport_visual_confidence: Mapped[int | None] = mapped_column(Integer)
+    visible_positive_signals: Mapped[list | None] = mapped_column(JSON)
+    visible_negative_signals: Mapped[list | None] = mapped_column(JSON)
+    vision_uncertainties: Mapped[list | None] = mapped_column(JSON)
+    visual_summary: Mapped[str | None] = mapped_column(Text)
+    vision_conflict: Mapped[bool] = mapped_column(default=False)
+
     # Relationships
     snapshots = relationship("ListingSnapshot", back_populates="listing",
                              cascade="all, delete-orphan")

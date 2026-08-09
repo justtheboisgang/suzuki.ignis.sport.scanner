@@ -2,11 +2,19 @@
 {%- if c >= 80 -%}conf-hi{%- elif c >= 60 -%}conf-mid{%- else -%}conf-lo{%- endif -%}
 {%- endmacro %}
 
+{% macro external_url(l) -%}
+{{ l.canonical_listing_url or l.original_listing_url or l.listing_url }}
+{%- endmacro %}
+
 {% macro listing_row(l) %}
 <tr>
   <td><a href="/listing/{{ l.internal_id }}">{{ (l.title or 'Untitled')[:70] }}</a>
+      {% set ext = (l.canonical_listing_url or l.original_listing_url or l.listing_url) %}
+      {% if ext %}<a href="{{ ext }}" target="_blank" rel="noopener noreferrer"
+         class="pill" style="margin-left:6px" title="Open the exact external listing">Original ↗</a>{% endif %}
       <div class="muted">{{ l.country or '?' }}{% if l.city %} · {{ l.city }}{% endif %}
-      {% if l.lhd_rhd and l.lhd_rhd != 'UNKNOWN' %} · {{ l.lhd_rhd }}{% endif %}</div></td>
+      {% if l.lhd_rhd and l.lhd_rhd != 'UNKNOWN' %} · {{ l.lhd_rhd }}{% endif %}
+      {% if l.vision_analyzed %} · 👁 {{ l.ignis_sport_visual_confidence }}%{% endif %}</div></td>
   <td class="{{ conf_class(l.vehicle_match_confidence) }}">{{ l.vehicle_match_confidence }}</td>
   <td>{{ l.opportunity_score if l.opportunity_score is not none else '–' }}</td>
   <td>{% if l.price_eur %}€{{ '{:,.0f}'.format(l.price_eur) }}{% else %}<span class="muted">?</span>{% endif %}</td>

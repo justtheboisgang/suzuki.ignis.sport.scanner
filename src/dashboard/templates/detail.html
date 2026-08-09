@@ -2,9 +2,48 @@
 {% block title %}{{ (l.title or 'Listing')[:50] }} · Ignis Sport Hunter{% endblock %}
 {% block body %}
 <a href="/listings">← back</a>
-<h2 class="section-title">{{ l.title or 'Untitled listing' }}</h2>
+{% set ext = (l.canonical_listing_url or l.original_listing_url or l.listing_url) %}
+<div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-top:8px;">
+  <h2 class="section-title" style="margin:0">{{ l.title or 'Untitled listing' }}</h2>
+  {% if ext %}<a class="pill" style="background:var(--accent); color:#111; font-weight:600;
+     padding:4px 12px;" href="{{ ext }}" target="_blank" rel="noopener noreferrer">Original-Anzeige ↗</a>{% endif %}
+</div>
 
-<div style="display:grid; grid-template-columns:2fr 1fr; gap:14px;">
+{% if l.image_urls %}
+<div class="card" style="margin-top:10px; overflow-x:auto;">
+  <div style="display:flex; gap:8px;">
+    {% for img in l.image_urls[:8] %}
+    <a href="{{ img }}" target="_blank" rel="noopener noreferrer">
+      <img src="{{ img }}" alt="photo" loading="lazy"
+           style="height:120px; border-radius:6px; border:1px solid var(--line);"></a>
+    {% endfor %}
+  </div>
+</div>
+{% endif %}
+
+{% if l.vision_analyzed %}
+<h2 class="section-title">👁 AI visual analysis</h2>
+<div class="card">
+  <div style="display:flex; gap:26px; flex-wrap:wrap;">
+    <div><div class="muted">Ignis</div><div class="stat small">{{ l.ignis_confidence }}%</div></div>
+    <div><div class="muted">Ignis Sport (visual)</div>
+         <div class="stat small conf-mid">{{ l.ignis_sport_visual_confidence }}%</div></div>
+    <div style="flex:1; min-width:240px;">
+      {% if l.visible_positive_signals %}<div class="conf-hi">Detected:
+        {% for s in l.visible_positive_signals %}<div>✓ {{ s }}</div>{% endfor %}</div>{% endif %}
+      {% if l.visible_negative_signals %}<div class="conf-lo" style="margin-top:6px">Against:
+        {% for s in l.visible_negative_signals %}<div>✗ {{ s }}</div>{% endfor %}</div>{% endif %}
+      {% if l.vision_uncertainties %}<div class="muted" style="margin-top:6px">Uncertain:
+        {% for s in l.vision_uncertainties %}<div>? {{ s }}</div>{% endfor %}</div>{% endif %}
+    </div>
+  </div>
+  {% if l.visual_summary %}<p class="muted" style="margin-top:8px">{{ l.visual_summary }}</p>{% endif %}
+  {% if l.vision_conflict %}<p class="conf-lo"><b>⚠ DATA_CONFLICT</b> — the images and the
+     title/parser disagree; verify the listing/model assignment manually.</p>{% endif %}
+</div>
+{% endif %}
+
+<div style="display:grid; grid-template-columns:2fr 1fr; gap:14px; margin-top:10px;">
   <div class="card">
     <table>
       <tr><th>Match confidence</th><td><b>{{ l.vehicle_match_confidence }}/100</b>
@@ -29,10 +68,6 @@
           {{ l.last_seen_at.strftime('%Y-%m-%d %H:%M') }}</td></tr>
       <tr><th>Source</th><td>{{ source.name if source else '–' }}
           {% if source %}<span class="muted">(DV {{ source.discovery_value }}, {{ source.source_type }})</span>{% endif %}</td></tr>
-      <tr><th>Original link</th><td><a href="{{ l.original_listing_url or l.listing_url }}" target="_blank" rel="noopener">open ↗</a></td></tr>
-      {% if l.alternate_urls %}<tr><th>Also listed at</th><td>
-        {% for u in l.alternate_urls %}<a href="{{ u }}" target="_blank" rel="noopener">{{ u[:60] }}</a><br>{% endfor %}
-      </td></tr>{% endif %}
     </table>
   </div>
 
@@ -55,6 +90,28 @@
       <button class="primary" type="submit" style="margin-top:6px">Save feedback</button>
     </form>
   </div>
+</div>
+
+<h2 class="section-title">🔗 Listing links (provenance)</h2>
+<div class="card">
+  {% set canonical = l.canonical_listing_url or l.original_listing_url or l.listing_url %}
+  {% set seen = [] %}
+  <table>
+    {% macro linkrow(label, url, preferred=False) %}
+      {% if url and url not in seen %}
+        {% set _ = seen.append(url) %}
+        <tr><td style="white-space:nowrap">
+            {% if preferred %}<span class="pill conf-hi">PREFERRED</span> {% endif %}{{ label }}</td>
+          <td><a href="{{ url }}" target="_blank" rel="noopener noreferrer">{{ url[:80] }}</a>
+            &nbsp;<a class="pill" href="{{ url }}" target="_blank" rel="noopener noreferrer">Open listing ↗</a></td></tr>
+      {% endif %}
+    {% endmacro %}
+    {{ linkrow('Canonical / best', canonical, preferred=True) }}
+    {% if l.original_listing_url %}{{ linkrow('Dealer / original', l.original_listing_url) }}{% endif %}
+    {{ linkrow('Found at', l.listing_url) }}
+    {% for u in (l.alternate_urls or []) %}{{ linkrow('Also listed at', u) }}{% endfor %}
+  </table>
+  <div class="muted" style="margin-top:6px">External links open in a new tab; your dashboard stays open.</div>
 </div>
 
 {% if l.ai_analysis %}

@@ -72,6 +72,21 @@ class ImageVerdict(BaseModel):
     is_fallback: bool = False
 
 
+class VisionVerdict(BaseModel):
+    """Two-stage Claude Vision result. Stage A: is it a Suzuki Ignis of the
+    relevant generation? Stage B: does it show Ignis-Sport visual cues? Nothing
+    invented — unclear things go into `uncertainties`."""
+
+    vehicle_identity_confidence: int = Field(default=0, ge=0, le=100)
+    ignis_confidence: int = Field(default=0, ge=0, le=100)              # Stage A
+    ignis_sport_visual_confidence: int = Field(default=0, ge=0, le=100)  # Stage B
+    visible_positive_signals: list[str] = Field(default_factory=list)
+    visible_negative_signals: list[str] = Field(default_factory=list)
+    uncertainties: list[str] = Field(default_factory=list)
+    visual_summary: str = ""
+    is_fallback: bool = False
+
+
 class ParserDiagnosis(BaseModel):
     """AI Source/Parser Diagnostic — why did a working source return nothing?"""
 

@@ -15,14 +15,9 @@
 </div>
 
 <div class="card" style="margin-top:14px; display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
-  <form class="inline" method="post" action="/run-scan" onsubmit="return busy(this)">
-    <input type="hidden" name="limit" value="25">
-    <button class="primary" type="submit">▶ Run scan (25 sources)</button>
-  </form>
-  <form class="inline" method="post" action="/run-discovery" onsubmit="return busy(this)">
-    <input type="hidden" name="max_queries" value="30">
-    <button type="submit">🔎 Run discovery</button>
-  </form>
+  <button id="btn-scan" class="primary" type="button" onclick="runJob('scan')">▶ Run scan</button>
+  <button id="btn-discovery" type="button" onclick="runJob('discovery')">🔎 Run discovery</button>
+  <span id="job-msg" class="pill" style="min-width:180px"></span>
   <span class="muted">Last scan:
     {% if stats.last_scan %}{{ stats.last_scan.start_time.strftime('%Y-%m-%d %H:%M') }}
       · {{ stats.last_scan.pages_checked }} pages
@@ -118,9 +113,27 @@
 </div>
 
 <script>
-function busy(f){ const b=f.querySelector('button'); b.disabled=true;
-  b.textContent='Starting…'; setTimeout(()=>{b.disabled=false;
-    b.textContent=b.dataset.label||b.textContent;}, 3000); return true; }
+const JOB_LABEL = {scan: '▶ Run scan', discovery: '🔎 Run discovery'};
+const JOB_RUNNING_LABEL = {scan: '▶ Scan läuft…', discovery: '🔎 Discovery läuft…'};
+let lastState = {scan: null, discovery: null};
+
+// Start a job in the BACKGROUND via fetch — never navigate away from the dashboard.
+async function runJob(kind){
+  const btn = document.getElementById('btn-'+kind);
+  const msg = document.getElementById('job-msg');
+  btn.disabled = true;
+  msg.textContent = (kind==='scan'?'Scan':'Discovery') + ' wird gestartet…';
+  try{
+    const body = new URLSearchParams(kind==='scan' ? {limit:25} : {max_queries:30});
+    const r = await fetch('/run-'+kind, {method:'POST',
+      headers:{'Content-Type':'application/x-www-form-urlencoded'}, body});
+    const data = await r.json();
+    msg.textContent = data.started
+      ? (kind==='scan' ? 'Scan gestartet' : 'Discovery gestartet')
+      : (kind==='scan' ? 'Scan läuft bereits' : 'Discovery läuft bereits');
+  }catch(e){ msg.textContent = 'Fehler: '+e; btn.disabled=false; }
+  refreshJobs();
+}
 
 // Compact, human detail line from a job's metrics dict.
 function jobDetails(jt, j){
@@ -168,6 +181,19 @@ async function refreshJobs(){
       tr.querySelector('.job-dur').textContent = j.duration_seconds? Math.round(j.duration_seconds)+'s':'–';
       const det = tr.querySelector('.job-details');
       det.textContent = j.error? j.error.slice(0,120) : jobDetails(jt, j);
+      // Reflect RUNNING on the buttons + surface Finished/Failed transitions.
+      const btn = document.getElementById('btn-'+jt);
+      if(btn){
+        if(j.state==='RUNNING'){ btn.disabled=true; btn.textContent=JOB_RUNNING_LABEL[jt]; }
+        else { btn.disabled=false; btn.textContent=JOB_LABEL[jt]; }
+      }
+      const msg = document.getElementById('job-msg');
+      if(msg && lastState[jt]==='RUNNING' && j.state!=='RUNNING'){
+        msg.textContent = (jt==='scan'?'Scan':'Discovery') + ' ' +
+          (j.state==='FAILED' ? 'fehlgeschlagen' : 'fertig') +
+          (j.duration_seconds ? ' ('+Math.round(j.duration_seconds)+'s)' : '');
+      }
+      lastState[jt] = j.state;
     });
   }catch(e){}
 }

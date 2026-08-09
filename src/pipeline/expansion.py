@@ -16,9 +16,10 @@ import re
 from sqlalchemy.orm import Session
 
 from ..discovery.classify import is_aggregator_domain
+from ..discovery.queries import BIG_PLATFORMS
 from ..models.listing import Listing
 from ..models.source import Source
-from ..utils.hashing import domain_of
+from ..utils.hashing import domain_of, is_specific_url, pick_canonical
 from ..utils.logging import get_logger
 
 log = get_logger("pipeline.expansion")
@@ -75,9 +76,25 @@ def set_provenance(listing: Listing, source: Source | None) -> None:
         if source.source_type in _MARKETPLACE_TYPES:
             listing.original_marketplace = source.domain
     listing.is_long_tail = is_long_tail_source(source)
-    if not listing.canonical_listing_url:
-        listing.canonical_listing_url = (listing.original_listing_url
-                                         or listing.listing_url)
+    finalize_links(listing)
+
+
+def finalize_links(listing: Listing) -> None:
+    """Guarantee the link fields point at a concrete vehicle page, never a bare
+    homepage when a specific listing URL is known; prefer the dealer's own
+    direct listing as canonical (P8/P10)."""
+    known = [listing.original_listing_url, listing.listing_url]
+    known += list(listing.alternate_urls or [])
+    known = [u for u in known if u]
+    canonical = pick_canonical(known, listing.dealer_domain, tuple(BIG_PLATFORMS))
+    if canonical:
+        listing.canonical_listing_url = canonical
+    # If the dealer's own specific listing is known, record it as original.
+    if listing.dealer_domain:
+        for u in known:
+            if domain_of(u) == listing.dealer_domain and is_specific_url(u):
+                listing.original_listing_url = u
+                break
 
 
 def expand_seller_to_source(session: Session, listing: Listing,
