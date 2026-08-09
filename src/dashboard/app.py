@@ -24,33 +24,26 @@ from . import queries as Q
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
 
-# Single-flight guard so a manual scan/discovery kicked off from the dashboard
-# runs in the background and can't overlap itself.
+# Manual scan/discovery kicked off from the dashboard runs in a daemon thread,
+# coordinated by the shared job lock so discovery and scan never collide.
 import threading  # noqa: E402
 
+from ..pipeline import jobs as _jobs  # noqa: E402
 from ..utils.logging import get_logger  # noqa: E402
 
 _log = get_logger("dashboard")
-_job_lock = threading.Lock()
 
 
-def _run_in_background(name: str, fn) -> bool:
-    """Start `fn` in a daemon thread if no manual job is already running.
-    Returns True if started, False if one was already in progress."""
-    if not _job_lock.acquire(blocking=False):
+def _start_job(job_type: str, fn) -> bool:
+    """Start a coordinated heavy job in the background. Returns False if a job
+    is already running (discovery or scan)."""
+    if _jobs.is_any_job_running():
         return False
 
     def _worker():
-        try:
-            _log.info("manual %s job started", name)
-            result = fn()
-            _log.info("manual %s job finished: %s", name, result)
-        except Exception as exc:  # never crash the web process
-            _log.warning("manual %s job failed: %s", name, exc)
-        finally:
-            _job_lock.release()
+        _jobs.run_exclusive(job_type, fn)
 
-    threading.Thread(target=_worker, name=f"manual-{name}", daemon=True).start()
+    threading.Thread(target=_worker, name=f"job-{job_type}", daemon=True).start()
     return True
 
 
@@ -79,6 +72,7 @@ def create_app() -> FastAPI:
                 "notifications": Q.recent_notifications(s, 12),
                 "new_sources": Q.newest_sources(s, 12),
                 "price_drops": Q.price_drops(s, 12),
+                "jobs": _jobs.all_job_status(),
             }
             return templates.TemplateResponse(request, "home.html", ctx)
         finally:
@@ -173,15 +167,14 @@ def create_app() -> FastAPI:
     @app.post("/feedback")
     def feedback(internal_id: str = Form(...), label: str = Form(...),
                  note: str = Form("")):
-        s = db()
-        try:
+        from ..database.writer import run_write
+
+        def _do(s):
             lst = s.query(Listing).filter(Listing.internal_id == internal_id).first()
             s.add(Feedback(listing_id=lst.id if lst else None,
                            seller_name=lst.seller_name if lst else None,
                            label=label, note=note or None))
-            s.commit()
-        finally:
-            s.close()
+        run_write(_do, label="feedback")
         return RedirectResponse(f"/listing/{internal_id}", status_code=303)
 
     @app.post("/add-source")
@@ -198,22 +191,28 @@ def create_app() -> FastAPI:
     @app.post("/run-scan")
     def trigger_scan(limit: int = Form(20)):
         from ..pipeline.scan import run_scan
-        started = _run_in_background(
-            "scan", lambda: run_scan(limit=limit, force=True, backup=False))
+        started = _start_job("scan", lambda: run_scan(
+            limit=limit, force=True, backup=False,
+            progress_cb=_jobs.make_progress_updater("scan")))
         return JSONResponse({"started": started,
-                             "note": "Scan running in background; refresh the "
-                                     "overview in a minute." if started
+                             "note": "Scan running in background; watch the Jobs "
+                                     "panel." if started
                                      else "A job is already running."})
 
     @app.post("/run-discovery")
-    def trigger_discovery(max_queries: int = Form(30)):
+    def trigger_discovery(max_queries: int = Form(60)):
         from ..pipeline.scan import run_discovery
-        started = _run_in_background(
-            "discovery", lambda: run_discovery(max_queries=max_queries))
+        started = _start_job("discovery", lambda: run_discovery(
+            max_queries=max_queries,
+            progress_cb=_jobs.make_progress_updater("discovery")))
         return JSONResponse({"started": started,
-                             "note": "Discovery running in background; refresh in "
-                                     "a minute." if started
+                             "note": "Discovery running in background; watch the "
+                                     "Jobs panel." if started
                                      else "A job is already running."})
+
+    @app.get("/api/jobs")
+    def api_jobs():
+        return JSONResponse(_jobs.all_job_status())
 
     @app.get("/healthz")
     def healthz():

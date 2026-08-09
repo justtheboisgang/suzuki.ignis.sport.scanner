@@ -13,7 +13,7 @@ sitemap. Everything is fetched politely and subject to robots.txt at crawl time.
 
 from __future__ import annotations
 
-from ..database.base import session_scope
+from ..database.writer import run_write
 from ..models.source import Source
 from ..models.enums import SourceType
 from ..utils.hashing import domain_of
@@ -156,28 +156,27 @@ SEED_SOURCES = AGGREGATORS + MARKETPLACES + ENTHUSIAST
 
 
 def seed_sources_into_db() -> int:
-    """Insert any seed sources not already present. Returns number added."""
-    added = 0
-    with session_scope() as s:
+    """Insert any seed sources not already present. Returns number added.
+    One short, serialised write transaction."""
+    counter = {"added": 0}
+
+    def _do(s):
+        counter["added"] = 0
         for spec in SEED_SOURCES:
             dom = domain_of(spec["domain"]) or spec["domain"]
-            exists = s.query(Source).filter(Source.domain == dom).first()
-            if exists:
+            if s.query(Source.id).filter(Source.domain == dom).first():
                 continue
             s.add(Source(
-                domain=dom,
-                name=spec["name"],
-                country=spec["country"],
-                language=spec.get("language"),
-                source_type=spec["source_type"],
-                base_url=spec["base_url"],
-                search_url=spec.get("search_url"),
+                domain=dom, name=spec["name"], country=spec["country"],
+                language=spec.get("language"), source_type=spec["source_type"],
+                base_url=spec["base_url"], search_url=spec.get("search_url"),
                 discovery_method="seed_list",
-                discovery_value=spec["discovery_value"],
-                priority=spec["priority"],
+                discovery_value=spec["discovery_value"], priority=spec["priority"],
                 parser_type=spec.get("parser_type", "html_generic"),
-                check_frequency="6h",
-            ))
-            added += 1
-    log.info("Seeded %d new sources (of %d in list)", added, len(SEED_SOURCES))
-    return added
+                check_frequency="6h"))
+            counter["added"] += 1
+
+    run_write(_do, label="seed_sources")
+    log.info("Seeded %d new sources (of %d in list)", counter["added"],
+             len(SEED_SOURCES))
+    return counter["added"]

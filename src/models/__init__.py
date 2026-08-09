@@ -18,6 +18,7 @@ from .ai_usage import AIUsage
 from .scan import ScanRun
 from .feedback import Feedback, Notification
 from .provider import ProviderUsage, DomainDiscovery
+from .job import JobStatus
 
 __all__ = [
     "Base",
@@ -40,4 +41,5 @@ __all__ = [
     "Notification",
     "ProviderUsage",
     "DomainDiscovery",
+    "JobStatus",
 ]

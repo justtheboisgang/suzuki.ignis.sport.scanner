@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 
 from ..config.settings import get_settings
 from ..database.base import session_scope
+from ..database.writer import run_write
 from ..models.ai_usage import AIUsage
 from ..models.provider import ProviderUsage
 from ..utils.logging import get_logger
@@ -65,9 +66,13 @@ def can_request(provider: str, needed: int = 1) -> bool:
 
 def record_request(provider: str, query: str, country: str | None, page: int,
                    results: int, ok: bool = True, error: str | None = None) -> None:
-    with session_scope() as s:
-        s.add(ProviderUsage(provider=provider, query=query[:2000], country=country,
-                            page=page, results_returned=results, ok=ok, error=error))
+    """Log one search request. Telemetry only — serialised + retrying, and it
+    NEVER raises (a failed usage INSERT must not abort discovery)."""
+    run_write(
+        lambda s: s.add(ProviderUsage(
+            provider=provider, query=query[:2000], country=country, page=page,
+            results_returned=results, ok=ok, error=error)),
+        swallow=True, label="provider_usage")
 
 
 def ai_cost_this_month() -> float:

@@ -26,34 +26,43 @@ log = get_logger("scheduler")
 
 
 def _job_full_scan():
-    log.info("[job] full scan starting")
-    try:
-        run_scan(force=False)
-    except Exception as exc:  # a failed run must not kill the scheduler
-        log.exception("full scan job failed: %s", exc)
+    # run_exclusive ensures a scheduled scan never overlaps a manual discovery /
+    # scan (they share SQLite write paths); it also records job_status.
+    from ..pipeline.jobs import make_progress_updater, run_exclusive
+    log.info("[job] full scan requested")
+    res = run_exclusive("scan", lambda: run_scan(
+        force=False, progress_cb=make_progress_updater("scan")))
+    if not res.get("started"):
+        log.info("[job] full scan skipped: %s", res.get("reason"))
 
 
 def _job_priority_sweep():
-    log.info("[job] priority sweep starting")
-    try:
-        # Only high-priority sources; force so they get checked more often.
+    from ..pipeline.jobs import make_progress_updater, run_exclusive
+    log.info("[job] priority sweep requested")
+
+    def _sweep():
         from ..database.base import session_scope
         from ..models.source import Source
         with session_scope() as s:
-            ids = [row.id for row in s.query(Source)
+            ids = [row.id for row in s.query(Source.id)
                    .filter(Source.active.is_(True), Source.priority >= 70).all()]
         if ids:
-            run_scan(limit=len(ids), force=True, backup=False)
-    except Exception as exc:
-        log.exception("priority sweep failed: %s", exc)
+            return run_scan(limit=len(ids), force=True, backup=False,
+                            progress_cb=make_progress_updater("scan"))
+        return {}
+
+    res = run_exclusive("scan", _sweep)
+    if not res.get("started"):
+        log.info("[job] priority sweep skipped: %s", res.get("reason"))
 
 
 def _job_discovery():
-    log.info("[job] daily discovery starting")
-    try:
-        run_discovery(max_queries=60)
-    except Exception as exc:
-        log.exception("discovery job failed: %s", exc)
+    from ..pipeline.jobs import make_progress_updater, run_exclusive
+    log.info("[job] daily discovery requested")
+    res = run_exclusive("discovery", lambda: run_discovery(
+        max_queries=60, progress_cb=make_progress_updater("discovery")))
+    if not res.get("started"):
+        log.info("[job] discovery skipped: %s", res.get("reason"))
 
 
 def _job_backup():

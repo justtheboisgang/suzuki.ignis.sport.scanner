@@ -29,6 +29,26 @@
       · {{ stats.last_scan.ai_calls }} AI calls{% else %}never{% endif %}</span>
 </div>
 
+<h2 class="section-title">⚙️ Jobs</h2>
+<div class="card">
+  <table><thead><tr><th>Job</th><th>State</th><th>Progress</th>
+    <th>New domains</th><th>Sources+</th><th>Duration</th><th>Message</th></tr></thead>
+  <tbody id="jobs-body">
+  {% for jt, j in jobs.items() %}
+    <tr data-job="{{ jt }}">
+      <td>{{ jt }}</td>
+      <td class="job-state">{{ j.state if j else 'IDLE' }}</td>
+      <td class="job-progress">{% if j %}{{ j.queries_done }}/{{ j.queries_total }}{% else %}–{% endif %}</td>
+      <td class="job-new">{{ j.new_domains if j else 0 }}</td>
+      <td class="job-src">{{ j.sources_added if j else 0 }}</td>
+      <td class="job-dur">{% if j and j.duration_seconds %}{{ '%.0f'|format(j.duration_seconds) }}s{% else %}–{% endif %}</td>
+      <td class="job-msg muted">{% if j and j.error %}<span class="conf-lo">{{ j.error[:80] }}</span>{% elif j %}{{ j.message or '' }}{% endif %}</td>
+    </tr>
+  {% endfor %}
+  </tbody></table>
+  <div class="muted" style="margin-top:6px">Live-updating while a job runs.</div>
+</div>
+
 <h2 class="section-title">🆕 New today</h2>
 <div class="card">{{ m.listing_table(new_today) }}</div>
 
@@ -78,6 +98,26 @@
 
 <script>
 function busy(f){ const b=f.querySelector('button'); b.disabled=true;
-  b.textContent='Working… (this can take a minute)'; return true; }
+  b.textContent='Starting…'; setTimeout(()=>{b.disabled=false;
+    b.textContent=b.dataset.label||b.textContent;}, 3000); return true; }
+
+// Live-update the Jobs panel every 3s so a running discovery/scan shows progress.
+async function refreshJobs(){
+  try{
+    const r = await fetch('/api/jobs'); const data = await r.json();
+    let running = false;
+    document.querySelectorAll('#jobs-body tr').forEach(tr=>{
+      const j = data[tr.dataset.job]; if(!j) return;
+      if(j.state==='RUNNING') running = true;
+      tr.querySelector('.job-state').textContent = j.state;
+      tr.querySelector('.job-progress').textContent = (j.queries_done||0)+'/'+(j.queries_total||0);
+      tr.querySelector('.job-new').textContent = j.new_domains||0;
+      tr.querySelector('.job-src').textContent = j.sources_added||0;
+      tr.querySelector('.job-dur').textContent = j.duration_seconds? Math.round(j.duration_seconds)+'s':'–';
+      tr.querySelector('.job-msg').textContent = j.error? j.error.slice(0,80) : (j.message||'');
+    });
+  }catch(e){}
+}
+setInterval(refreshJobs, 3000); refreshJobs();
 </script>
 {% endblock %}

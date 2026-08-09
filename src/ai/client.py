@@ -116,17 +116,17 @@ class ClaudeClient:
 
     def _log_usage(self, module, model, in_tok, out_tok, cost, cache_hit,
                    target_type, target_id, ok=True, error=None):
-        try:
-            with session_scope() as s:
-                s.add(AIUsage(
-                    module=module, model=model, input_tokens=in_tok,
-                    output_tokens=out_tok, estimated_cost_usd=cost,
-                    cache_hit=cache_hit, target_type=target_type,
-                    target_id=str(target_id) if target_id is not None else None,
-                    ok=ok, error=error,
-                ))
-        except Exception as exc:  # pragma: no cover - logging must never crash
-            log.debug("ai_usage log failed: %s", exc)
+        # Telemetry only: serialised + retrying write that never raises, so a
+        # locked DB can never abort an AI-assisted discovery/scan step.
+        from ..database.writer import run_write
+        run_write(
+            lambda s: s.add(AIUsage(
+                module=module, model=model, input_tokens=in_tok,
+                output_tokens=out_tok, estimated_cost_usd=cost,
+                cache_hit=cache_hit, target_type=target_type,
+                target_id=str(target_id) if target_id is not None else None,
+                ok=ok, error=error)),
+            swallow=True, label="ai_usage")
 
     # ------------------------------------------------------------------ #
     def structured(

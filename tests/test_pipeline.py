@@ -14,7 +14,9 @@ def _dealer(session):
                  country="DE", source_type="dealer",
                  base_url="https://autohaus-mueller.de/", discovery_value=75)
     session.add(src)
-    session.flush()
+    # Commit so process_candidate's separate write session (a different
+    # connection) can see the source row (FK + counter updates).
+    session.commit()
     return src
 
 
@@ -30,8 +32,7 @@ def _sport_raw(url="https://autohaus-mueller.de/f/ignis-sport-1"):
 
 def test_ingest_creates_scored_listing(session):
     src = _dealer(session)
-    res = process_candidate(session, _sport_raw(), src)
-    session.commit()
+    res = process_candidate(_sport_raw(), src)
     assert res.is_new and res.is_ignis and res.is_sport_candidate
     lst = session.query(Listing).one()
     assert lst.vehicle_match_confidence >= 80
@@ -45,20 +46,18 @@ def test_irrelevant_candidate_dropped(session):
     src = _dealer(session)
     raw = RawListing(title="VW Golf GTI", url="https://x.de/golf",
                      source_domain="autohaus-mueller.de")
-    res = process_candidate(session, raw, src)
+    res = process_candidate(raw, src)
     assert res.listing is None
     assert session.query(Listing).count() == 0
 
 
 def test_price_change_recorded(session):
     src = _dealer(session)
-    process_candidate(session, _sport_raw(), src)
-    session.commit()
+    process_candidate(_sport_raw(), src)
     # Same car, lower price, seen again.
     cheaper = _sport_raw()
     cheaper.price = 4500.0
-    process_candidate(session, cheaper, src)
-    session.commit()
+    process_candidate(cheaper, src)
     assert session.query(Listing).count() == 1
     ph = session.query(PriceHistory).all()
     assert len(ph) == 1
@@ -69,14 +68,12 @@ def test_cross_platform_dedup_by_vin(session):
     src = _dealer(session)
     a = _sport_raw("https://autohaus-mueller.de/f/ignis-1")
     a.vin = "JSAFHX51S00123456"
-    process_candidate(session, a, src)
-    session.commit()
+    process_candidate(a, src)
     # Same VIN on a different marketplace URL -> must merge into ONE listing.
     b = _sport_raw("https://autoscout24.de/angebot/xyz")
     b.vin = "JSAFHX51S00123456"
     b.source_domain = "autoscout24.de"
-    res = process_candidate(session, b, src)
-    session.commit()
+    res = process_candidate(b, src)
     assert res.duplicate_merged
     assert session.query(Listing).count() == 1
     lst = session.query(Listing).one()

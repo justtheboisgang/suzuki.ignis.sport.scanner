@@ -1,9 +1,10 @@
 """Top-level scan / discovery / recheck orchestration.
 
-`run_scan` walks the sources that are due, crawls them politely, ingests every
-candidate, fires alerts for strong new hits, updates per-source health (invoking
-the parser diagnostic when a healthy source suddenly yields nothing), and writes
-a ScanRun log row.
+Concurrency contract (fixes the DB-lock bug): the scan loop NEVER holds a write
+transaction across a crawl. It reads the due sources in one short read, crawls
+each source with no DB txn open, ingests candidates (each `process_candidate`
+does its own short write), then finalises per-source health in a short write.
+The parser diagnostic (a network/AI call) runs before that write, never inside.
 """
 
 from __future__ import annotations
@@ -17,7 +18,9 @@ from ..crawlers.base import CrawlContext, HttpFetcher
 from ..crawlers.http_crawler import crawl_source
 from ..database.base import session_scope
 from ..database.init_db import backup_database
+from ..database.writer import run_write, write_session
 from ..models.enums import ListingStatus
+from ..models.history import StatusHistory
 from ..models.listing import Listing
 from ..models.scan import ScanRun
 from ..models.source import Source
@@ -46,12 +49,15 @@ def _due_sources(session, limit: int | None, force: bool) -> list[Source]:
                if s.next_check_at is None or s.next_check_at <= now]
     if limit:
         due = due[:limit]
+    # Expunge so we can safely read attributes after the read session closes.
+    for s in due:
+        session.expunge(s)
     return due
 
 
-def _schedule_next(source: Source) -> None:
-    delta = _FREQ_TO_DELTA.get(source.check_frequency, timedelta(hours=6))
-    source.next_check_at = datetime.now(timezone.utc) + delta
+def _next_check(freq: str) -> datetime:
+    delta = _FREQ_TO_DELTA.get(freq, timedelta(hours=6))
+    return datetime.now(timezone.utc) + delta
 
 
 def _alert_for_hit(manager, listing: Listing, source: Source | None) -> None:
@@ -67,7 +73,7 @@ def _alert_for_hit(manager, listing: Listing, source: Source | None) -> None:
         why_bits.append("low mileage")
     if listing.lhd_rhd == "LHD":
         why_bits.append("left-hand drive")
-    if source and source.discovery_value >= 65:
+    if source and (source.discovery_value or 0) >= 65:
         why_bits.append(f"long-tail source ({source.source_type})")
     if listing.classification and "CONFIRMED" in (listing.classification or ""):
         why_bits.append("confirmed Sport spec")
@@ -89,91 +95,92 @@ def _alert_for_hit(manager, listing: Listing, source: Source | None) -> None:
     manager.dispatch(Notification(
         title=f"Ignis Sport candidate ({listing.vehicle_match_confidence}/100) "
               f"in {listing.country or '?'}",
-        body=format_hit(payload),
-        priority=priority,
-        listing_id=listing.id,
-        payload=payload,
-    ))
+        body=format_hit(payload), priority=priority,
+        listing_id=listing.id, payload=payload))
 
 
 def run_scan(limit: int | None = None, force: bool = False,
-             backup: bool = True) -> dict:
+             backup: bool = True, progress_cb=None) -> dict:
     """Run one scan cycle over due sources. Returns a summary dict."""
     settings = get_settings()
     scan_id = uuid.uuid4().hex[:16]
     manager = get_manager()
     errors: list[str] = []
 
+    run_id = run_write(lambda s: _create_scan_run(s, scan_id), label="scan.create")
+
     with session_scope() as session:
-        run = ScanRun(scan_id=scan_id, kind="scan")
-        session.add(run)
-        session.flush()
         due = _due_sources(session, limit, force)
-        run.sources_attempted = len(due)
-        log.info("Scan %s starting over %d sources", scan_id, len(due))
+    log.info("Scan %s starting over %d sources", scan_id, len(due))
+    if progress_cb:
+        progress_cb(queries_total=len(due), queries_done=0)
 
-        totals = dict(new=0, changed=0, seen=0, ai=0, pages=0, ok=0, failed=0)
+    totals = dict(new=0, changed=0, seen=0, ai=0, pages=0, ok=0, failed=0)
 
-        with HttpFetcher(settings) as fetcher:
-            for source in due:
-                ctx = CrawlContext(fetcher=fetcher,
-                                   max_pages=settings.max_pages_per_source)
-                source.last_checked_at = datetime.now(timezone.utc)
-                try:
-                    candidates, pages = crawl_source(ctx, source)
-                except Exception as exc:  # a bad source must not kill the scan
-                    log.warning("source %s crawl error: %s", source.domain, exc)
-                    errors.append(f"{source.domain}: {exc}")
-                    source.failure_count += 1
-                    source.health = "failed"
-                    _schedule_next(source)
-                    totals["failed"] += 1
+    with HttpFetcher(settings) as fetcher:
+        for idx, source in enumerate(due, start=1):
+            ctx = CrawlContext(fetcher=fetcher,
+                               max_pages=settings.max_pages_per_source)
+            # 1) NETWORK: crawl (no DB txn open).
+            crawl_error = None
+            candidates, pages = [], 0
+            try:
+                candidates, pages = crawl_source(ctx, source)
+            except Exception as exc:  # a bad source must not kill the scan
+                crawl_error = str(exc)
+                log.warning("source %s crawl error: %s", source.domain, exc)
+                errors.append(f"{source.domain}: {exc}")
+
+            totals["pages"] += pages
+            errors.extend(ctx.errors)
+            result_count = 0
+
+            # 2) Ingest each candidate (each does its own short write).
+            for raw in candidates:
+                res = process_candidate(raw, source)
+                if res.listing is None:
                     continue
+                totals["seen"] += 1
+                result_count += 1
+                if res.used_ai:
+                    totals["ai"] += 1
+                if res.is_new:
+                    totals["new"] += 1
+                    _alert_for_hit(manager, res.listing, source)
+                elif res.price_changed or res.duplicate_merged:
+                    totals["changed"] += 1
 
-                totals["pages"] += pages
-                errors.extend(ctx.errors)
-                result_count = 0
+            # 3) Diagnostic (network) BEFORE the write, only when needed.
+            prev_typical = source.typical_result_count or 0
+            diag_note = None
+            if crawl_error is None and result_count == 0 and prev_typical >= 3:
+                diag = diagnose_parser(status=0, html="", typical=prev_typical,
+                                       current=0, domain=source.domain)
+                diag_note = (f"POSSIBLE_PARSER_FAILURE: {diag.likely_cause} — "
+                             f"{diag.suggested_action}")
+                log.warning("%s: %s", source.domain, diag_note)
 
-                for raw in candidates:
-                    res = process_candidate(session, raw, source)
-                    if res.listing is None:
-                        continue
-                    totals["seen"] += 1
-                    result_count += 1
-                    if res.used_ai:
-                        totals["ai"] += 1
-                    if res.is_new:
-                        totals["new"] += 1
-                        _alert_for_hit(manager, res.listing, source)
-                    elif res.price_changed or res.duplicate_merged:
-                        totals["changed"] += 1
+            # 4) SHORT WRITE: update this source's health/counters/schedule.
+            failed = crawl_error is not None
+            run_write(lambda s, sid=source.id, rc=result_count, pt=prev_typical,
+                      failed=failed, note=diag_note, freq=source.check_frequency:
+                      _finalize_source(s, sid, rc, pt, failed, note, freq),
+                      label="scan.finalize_source", swallow=True)
+            if failed:
+                totals["failed"] += 1
+            else:
+                totals["ok"] += 1
 
-                # --- Source health / diagnostic. -------------------------
-                _update_source_health(source, ctx, result_count)
-                if source.health != "failed":
-                    source.last_success_at = datetime.now(timezone.utc)
-                    source.failure_count = 0
-                    totals["ok"] += 1
-                _schedule_next(source)
+            if progress_cb and idx % 5 == 0:
+                progress_cb(queries_done=idx, results=totals["seen"],
+                            new_domains=totals["new"])
 
-        run.sources_successful = totals["ok"]
-        run.sources_failed = totals["failed"]
-        run.pages_checked = totals["pages"]
-        run.listings_seen = totals["seen"]
-        run.new_listings = totals["new"]
-        run.changed_listings = totals["changed"]
-        run.ai_calls = totals["ai"]
-        run.errors = errors[:200]
-        run.end_time = datetime.now(timezone.utc)
-        run.status = "done"
-        summary = {
-            "scan_id": scan_id,
-            "sources": len(due),
-            **totals,
-            "errors": len(errors),
-        }
+    # 5) Finalise the ScanRun row.
+    run_write(lambda s: _finalize_scan_run(s, run_id, totals, errors),
+              label="scan.finalize", swallow=True)
 
-    # Recheck listings we didn't see this round, then back up the DB.
+    summary = {"scan_id": scan_id, "sources": len(due), **totals,
+               "errors": len(errors)}
     removed = recheck_disappeared()
     summary["removed"] = removed
     if backup:
@@ -182,32 +189,64 @@ def run_scan(limit: int | None = None, force: bool = False,
     return summary
 
 
-def _update_source_health(source: Source, ctx: CrawlContext, result_count: int):
-    """Flag a probable parser failure when a normally-productive source returns
-    nothing, and run the (fallback-safe) diagnostic."""
-    prev_typical = source.typical_result_count or 0
-    source.last_result_count = result_count
+def _create_scan_run(session, scan_id: str) -> int:
+    run = ScanRun(scan_id=scan_id, kind="scan")
+    session.add(run)
+    session.flush()
+    return run.id
 
-    if result_count == 0 and prev_typical >= 3:
-        source.health = "degraded"
-        diag = diagnose_parser(status=0, html="", typical=prev_typical,
-                               current=0, domain=source.domain)
-        note = f"POSSIBLE_PARSER_FAILURE: {diag.likely_cause} — {diag.suggested_action}"
-        source.notes = note[:500]
-        log.warning("%s: %s", source.domain, note)
+
+def _finalize_scan_run(session, run_id: int, totals: dict, errors: list) -> None:
+    run = session.get(ScanRun, run_id)
+    if not run:
+        return
+    run.sources_successful = totals["ok"]
+    run.sources_failed = totals["failed"]
+    run.pages_checked = totals["pages"]
+    run.listings_seen = totals["seen"]
+    run.new_listings = totals["new"]
+    run.changed_listings = totals["changed"]
+    run.ai_calls = totals["ai"]
+    run.sources_attempted = totals["ok"] + totals["failed"]
+    run.errors = errors[:200]
+    run.end_time = datetime.now(timezone.utc)
+    run.status = "done"
+
+
+def _finalize_source(session, source_id: int, result_count: int,
+                     prev_typical: int, failed: bool, diag_note: str | None,
+                     freq: str) -> None:
+    src = session.get(Source, source_id)
+    if not src:
+        return
+    now = datetime.now(timezone.utc)
+    src.last_checked_at = now
+    src.last_result_count = result_count
+    src.next_check_at = _next_check(freq)
+    if failed:
+        src.failure_count = (src.failure_count or 0) + 1
+        src.health = "failed"
+        return
+    if diag_note is not None:
+        src.health = "degraded"
+        src.notes = diag_note[:500]
     else:
-        source.health = "healthy" if result_count > 0 else source.health or "unknown"
-        # Smooth the typical count (EMA).
-        source.typical_result_count = int(round(0.7 * prev_typical + 0.3 * result_count))
+        src.health = "healthy" if result_count > 0 else (src.health or "unknown")
+        src.typical_result_count = int(round(0.7 * prev_typical + 0.3 * result_count))
+    src.last_success_at = now
+    src.failure_count = 0
 
 
 def recheck_disappeared(miss_threshold: int = 3) -> int:
     """Mark listings not seen recently. A single miss never means SOLD — we
-    escalate ACTIVE → MAYBE_ACTIVE → EXPIRED/REMOVED over consecutive misses."""
+    escalate ACTIVE → MAYBE_ACTIVE → EXPIRED over consecutive misses. One short
+    write transaction, no network."""
     now = datetime.now(timezone.utc)
     stale_before = now - timedelta(hours=20)
-    removed = 0
-    with session_scope() as session:
+    removed = {"n": 0}
+
+    def _do(session):
+        removed["n"] = 0
         listings = session.query(Listing).filter(
             Listing.listing_status.in_([ListingStatus.ACTIVE.value,
                                         ListingStatus.MAYBE_ACTIVE.value])).all()
@@ -223,26 +262,29 @@ def recheck_disappeared(miss_threshold: int = 3) -> int:
                 lst.listing_status = ListingStatus.MAYBE_ACTIVE.value
             elif lst.consecutive_misses >= miss_threshold:
                 lst.listing_status = ListingStatus.EXPIRED.value
-                removed += 1
+                removed["n"] += 1
             if lst.listing_status != old:
-                from ..models.history import StatusHistory
-                session.add(StatusHistory(listing_id=lst.id, old_status=old,
-                                          new_status=lst.listing_status,
-                                          note=f"{lst.consecutive_misses} consecutive misses"))
-    return removed
+                session.add(StatusHistory(
+                    listing_id=lst.id, old_status=old,
+                    new_status=lst.listing_status,
+                    note=f"{lst.consecutive_misses} consecutive misses"))
+
+    run_write(_do, label="recheck_disappeared", swallow=True)
+    return removed["n"]
 
 
-def run_discovery(countries: list[str] | None = None, max_queries: int = 40) -> dict:
+def run_discovery(countries: list[str] | None = None, max_queries: int = 40,
+                  progress_cb=None) -> dict:
     """Run a source-discovery pass and log it as a ScanRun of kind=discovery."""
     from ..discovery.engine import DiscoveryEngine
     scan_id = uuid.uuid4().hex[:16]
     engine = DiscoveryEngine()
-    summary = engine.run(countries=countries, max_queries=max_queries)
-    with session_scope() as session:
-        session.add(ScanRun(
-            scan_id=scan_id, kind="discovery",
-            end_time=datetime.now(timezone.utc), status="done",
-            new_domains=summary.get("new_domains", 0),
-            sources_attempted=summary.get("queries_run", 0)))
+    summary = engine.run(countries=countries, max_queries=max_queries,
+                         progress_cb=progress_cb)
+    run_write(lambda s: s.add(ScanRun(
+        scan_id=scan_id, kind="discovery", end_time=datetime.now(timezone.utc),
+        status="done", new_domains=summary.get("new_domains", 0),
+        sources_attempted=summary.get("queries_run", 0))),
+        label="discovery.scanrun", swallow=True)
     summary["scan_id"] = scan_id
     return summary
