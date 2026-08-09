@@ -57,6 +57,7 @@ def get_job_status(job_type: str) -> dict | None:
             "new_domains": row.new_domains, "sources_added": row.sources_added,
             "results": row.results, "duration_seconds": row.duration_seconds,
             "message": row.message, "error": row.error,
+            "metrics": row.metrics or {},
         }
 
 
@@ -78,19 +79,25 @@ def run_exclusive(job_type: str, fn: Callable[[], dict]) -> dict:
     start = _now()
     set_job_status(job_type, state="RUNNING", started_at=start, finished_at=None,
                    error=None, message=f"{job_type} started",
-                   queries_done=0, new_domains=0, sources_added=0, results=0)
+                   queries_done=0, new_domains=0, sources_added=0, results=0,
+                   metrics={})
     try:
         result = fn() or {}
         duration = (_now() - start).total_seconds()
+        # Store the whole result as job-type-specific metrics; also mirror a few
+        # common scalars into legacy columns for convenience.
+        metrics = {k: v for k, v in result.items() if k != "started"}
         set_job_status(job_type, state="FINISHED", finished_at=_now(),
                        duration_seconds=round(duration, 1),
-                       queries_total=result.get("queries_run",
-                                                result.get("queries_planned", 0)),
-                       queries_done=result.get("queries_run", 0),
+                       queries_total=result.get("queries_planned",
+                                                result.get("sources", 0)),
+                       queries_done=result.get("queries_run",
+                                               result.get("sources", 0)),
                        new_domains=result.get("new_domains", 0),
-                       sources_added=result.get("sources_added",
-                                                result.get("new", 0)),
-                       results=result.get("listings_seen", result.get("seen", 0)),
+                       sources_added=result.get("sources_added", 0),
+                       results=result.get("listings_ingested",
+                                          result.get("listings_accepted", 0)),
+                       metrics=metrics,
                        message=f"{job_type} finished in {duration:.0f}s")
         result["started"] = True
         return result
@@ -105,8 +112,24 @@ def run_exclusive(job_type: str, fn: Callable[[], dict]) -> dict:
 
 
 def make_progress_updater(job_type: str):
-    """Return a callback(dict) the engines call to stream progress into
-    job_status (and it stays cheap: a single short write per tick)."""
-    def _update(**fields):
-        set_job_status(job_type, **fields)
+    """Return a callback the engines call to stream progress into job_status.
+    Accepts `metrics` (a dict of job-specific counters) and/or `message`, plus
+    optional legacy scalars. Cheap: one short serialised write per tick."""
+    def _update(metrics: dict | None = None, message: str | None = None, **legacy):
+        fields = dict(legacy)
+        if metrics is not None:
+            fields["metrics"] = metrics
+            # Mirror common counters into legacy columns for older views.
+            for src_key, col in (("planned", "queries_total"),
+                                 ("executed", "queries_done"),
+                                 ("sources_done", "queries_done"),
+                                 ("sources_total", "queries_total"),
+                                 ("new_domains", "new_domains"),
+                                 ("sources_registered", "sources_added")):
+                if src_key in metrics:
+                    fields[col] = metrics[src_key]
+        if message is not None:
+            fields["message"] = message
+        if fields:
+            set_job_status(job_type, **fields)
     return _update

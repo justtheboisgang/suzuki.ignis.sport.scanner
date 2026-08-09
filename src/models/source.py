@@ -67,5 +67,19 @@ class Source(Base):
     is_aggregator: Mapped[bool] = mapped_column(Boolean, default=False)
     seller_derived: Mapped[bool] = mapped_column(Boolean, default=False)
 
+    # Source-quality separation (Phase 17b): a parts/tuning/insurer/article site
+    # is NOT a monitorable vehicle source even if it mentions Suzuki.
+    #   MONITORABLE_VEHICLE_SOURCE / DISCOVERY_ONLY_SOURCE / IRRELEVANT
+    source_category: Mapped[str] = mapped_column(String(30),
+                                                 default="MONITORABLE_VEHICLE_SOURCE",
+                                                 index=True)
+    # Confidence that the site is a relevant vehicle source (0-100) vs. that we
+    # can actually crawl its inventory (0-100). discovery_value stays separate.
+    source_relevance_confidence: Mapped[int] = mapped_column(Integer, default=50)
+    monitorability_confidence: Mapped[int] = mapped_column(Integer, default=50)
+    # The country we were searching for when we found it — NOT necessarily the
+    # site's real country (that goes in `country`, verified from the page).
+    discovered_for_country: Mapped[str | None] = mapped_column(String(4))
+
     def __repr__(self) -> str:  # pragma: no cover
         return f"<Source {self.domain} [{self.source_type}] {self.country}>"

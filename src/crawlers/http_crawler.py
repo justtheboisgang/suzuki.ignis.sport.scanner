@@ -42,16 +42,32 @@ def crawl_source(ctx: CrawlContext, source: Source) -> tuple[list[RawListing], i
 
     # 2) Direct listing/search page HTML.
     target_url = source.search_url or source.base_url
-    if target_url:
+    if not target_url:
+        ctx.outcome = "NO_TARGET"
+    else:
         res = ctx.fetcher.fetch(target_url)
         pages += 1
+        ctx.http_status = res.status_code
         if res.blocked_by_robots:
+            ctx.outcome = "ROBOTS"
             ctx.errors.append(f"{domain}: blocked by robots.txt")
         elif res.from_cache:
+            ctx.outcome = "UNCHANGED"
             log.info("%s unchanged (304)", domain)
         elif res.ok:
-            listings += extract_listings_from_html(res.text, res.url, domain, country)
+            extracted = extract_listings_from_html(res.text, res.url, domain, country)
+            listings += extracted
+            if extracted:
+                ctx.outcome = "ACCESSIBLE"
+            elif any(m in res.text.lower()[:6000] for m in
+                     ("enable javascript", "please enable js", "<noscript")):
+                ctx.outcome = "JS_REQUIRED"
+            else:
+                ctx.outcome = "EMPTY"
         else:
+            code = res.status_code
+            ctx.outcome = {403: "HTTP_403", 429: "HTTP_429", 404: "HTTP_404"}.get(
+                code, "ERROR")
             ctx.errors.append(f"{domain}: {res.error}")
 
     # 3) Sitemap deep-crawl for small/long-tail dealer sites when the search
@@ -71,5 +87,8 @@ def crawl_source(ctx: CrawlContext, source: Source) -> tuple[list[RawListing], i
             if pages >= ctx.max_pages:
                 break
 
-    log.info("source %s -> %d candidates over %d pages", domain, len(listings), pages)
+    if listings and ctx.outcome in ("EMPTY", "UNCHANGED", "UNKNOWN"):
+        ctx.outcome = "ACCESSIBLE"
+    log.info("source %s -> %d candidates over %d pages (%s)", domain,
+             len(listings), pages, ctx.outcome)
     return listings, pages

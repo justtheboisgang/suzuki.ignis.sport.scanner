@@ -191,3 +191,8 @@ class CrawlContext:
     max_pages: int
     pages_checked: int = 0
     errors: list[str] = field(default_factory=list)
+    # Transparent per-source outcome, set by crawl_source:
+    # ACCESSIBLE / EMPTY / JS_REQUIRED / ROBOTS / HTTP_403 / HTTP_429 /
+    # HTTP_404 / ERROR / NO_TARGET / UNCHANGED
+    outcome: str = "UNKNOWN"
+    http_status: int | None = None

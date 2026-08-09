@@ -15,7 +15,7 @@ import re
 
 from sqlalchemy.orm import Session
 
-from ..discovery.engine import is_aggregator_domain
+from ..discovery.classify import is_aggregator_domain
 from ..models.listing import Listing
 from ..models.source import Source
 from ..utils.hashing import domain_of

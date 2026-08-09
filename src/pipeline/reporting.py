@@ -16,6 +16,7 @@ from ..models.enums import ListingStatus, SourceLiveStatus
 from ..models.listing import Listing
 from ..models.provider import DomainDiscovery, ProviderUsage
 from ..models.scan import ScanRun
+from ..models.search_hit import SearchHit
 from ..models.source import Source
 
 
@@ -56,6 +57,32 @@ def build_report() -> dict:
                    + live(SourceLiveStatus.LOGIN_REQUIRED.value))
         failed = (live(SourceLiveStatus.DEAD.value)
                   + live(SourceLiveStatus.PARSER_BROKEN.value))
+
+        # Source-quality split (P4).
+        monitorable = s.query(Source).filter(
+            Source.source_category == "MONITORABLE_VEHICLE_SOURCE").count()
+        discovery_only = s.query(Source).filter(
+            Source.source_category == "DISCOVERY_ONLY_SOURCE").count()
+        active_sources = s.query(Source).filter(Source.active.is_(True)).count()
+
+        # Search-hit examination summary (P2/P3/P8).
+        hit_total = s.query(SearchHit).count()
+
+        def hit_count(**flt):
+            q = s.query(SearchHit)
+            for k, v in flt.items():
+                q = q.filter(getattr(SearchHit, k) == v)
+            return q.count()
+
+        hits_by_status = {st: hit_count(processing_status=st) for st in
+                          ("INGESTED", "SOURCE_REGISTERED", "SKIPPED", "BLOCKED",
+                           "ERROR", "PENDING")}
+        recent_hits = (s.query(SearchHit)
+                       .order_by(SearchHit.discovered_at.desc()).limit(25).all())
+        examined_rows = [{"url": h.exact_url, "type": h.hit_type,
+                          "status": h.processing_status, "http": h.http_status,
+                          "query": h.query, "note": (h.note or "")[:60]}
+                         for h in recent_hits]
 
         new_dealers = s.query(Source).filter(Source.seller_derived.is_(True)).count()
         search_dealers = s.query(Source).filter(
@@ -132,10 +159,18 @@ def build_report() -> dict:
         },
         "discovery": {
             "known_domains_now": sources_total,
+            "monitorable_vehicle_sources": monitorable,
+            "discovery_only_sources": discovery_only,
+            "active_sources": active_sources,
             "new_dealer_domains_from_sellers": new_dealers,
             "new_dealer_domains_from_search": search_dealers,
             "new_marketplaces": new_marketplaces,
             "new_forums_clubs": new_forums,
+        },
+        "search_hits": {
+            "total": hit_total,
+            "by_status": hits_by_status,
+            "recent_examined": examined_rows,
         },
         "vehicles": {
             "confirmed_ignis_sports": confirmed,
@@ -184,6 +219,15 @@ def print_report(rep: dict) -> None:
         print("  (none yet)")
     for r in rep["long_tail_wins"]:
         print(f"  {r['country'] or '?'} {(r['title'] or '')[:50]} -> {r['canonical_url'][:60]}")
+
+    hdr("SEARCH HITS EXAMINED (concrete results investigated / discarded)")
+    sh = rep["search_hits"]
+    print(f"  total stored: {sh['total']} | by status: {sh['by_status']}")
+    for h in sh["recent_examined"]:
+        print(f"  [{h['type']:<16} {h['status']:<16} {h['http'] or '-'}] "
+              f"{(h['url'] or '')[:70]}")
+        if h["note"]:
+            print(f"        ↳ {h['note']}")
 
     hdr("PROVIDER COMPARISON")
     for k, v in rep["provider_comparison"].items():

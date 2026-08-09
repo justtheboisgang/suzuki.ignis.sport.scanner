@@ -32,21 +32,21 @@
 <h2 class="section-title">⚙️ Jobs</h2>
 <div class="card">
   <table><thead><tr><th>Job</th><th>State</th><th>Progress</th>
-    <th>New domains</th><th>Sources+</th><th>Duration</th><th>Message</th></tr></thead>
+    <th>Duration</th><th>Details</th></tr></thead>
   <tbody id="jobs-body">
   {% for jt, j in jobs.items() %}
     <tr data-job="{{ jt }}">
       <td>{{ jt }}</td>
       <td class="job-state">{{ j.state if j else 'IDLE' }}</td>
       <td class="job-progress">{% if j %}{{ j.queries_done }}/{{ j.queries_total }}{% else %}–{% endif %}</td>
-      <td class="job-new">{{ j.new_domains if j else 0 }}</td>
-      <td class="job-src">{{ j.sources_added if j else 0 }}</td>
       <td class="job-dur">{% if j and j.duration_seconds %}{{ '%.0f'|format(j.duration_seconds) }}s{% else %}–{% endif %}</td>
-      <td class="job-msg muted">{% if j and j.error %}<span class="conf-lo">{{ j.error[:80] }}</span>{% elif j %}{{ j.message or '' }}{% endif %}</td>
+      <td class="job-details muted">{% if j and j.error %}<span class="conf-lo">{{ j.error[:120] }}</span>{% else %}{{ j.message if j else '' }}{% endif %}</td>
     </tr>
   {% endfor %}
   </tbody></table>
-  <div class="muted" style="margin-top:6px">Live-updating while a job runs.</div>
+  <div class="muted" style="margin-top:6px">Live-updating while a job runs.
+    Discovery shows planned/executed/skipped &amp; hits examined; scan shows
+    sources, pages, candidates, accepted and the outcome breakdown.</div>
 </div>
 
 <h2 class="section-title">🆕 New today</h2>
@@ -101,20 +101,48 @@ function busy(f){ const b=f.querySelector('button'); b.disabled=true;
   b.textContent='Starting…'; setTimeout(()=>{b.disabled=false;
     b.textContent=b.dataset.label||b.textContent;}, 3000); return true; }
 
+// Compact, human detail line from a job's metrics dict.
+function jobDetails(jt, j){
+  const m = j.metrics || {};
+  if(jt==='discovery'){
+    const parts = [];
+    if(m.planned!=null) parts.push('planned '+m.planned);
+    if(m.executed!=null) parts.push('executed '+m.executed);
+    if(m.skipped_recently) parts.push('skipped_recent '+m.skipped_recently);
+    if(m.skipped_budget) parts.push('skipped_budget '+m.skipped_budget);
+    if(m.hits_examined!=null) parts.push('hits '+m.hits_examined);
+    if(m.new_domains!=null) parts.push('new_domains '+m.new_domains);
+    if(m.sources_registered!=null) parts.push('sources+ '+m.sources_registered);
+    if(m.listings_ingested!=null) parts.push('listings '+m.listings_ingested);
+    if(m.blocked) parts.push('blocked '+m.blocked);
+    return parts.join(' · ') || (j.message||'');
+  }
+  if(jt==='scan'){
+    const parts = [];
+    if(m.pages_fetched!=null) parts.push('pages '+m.pages_fetched);
+    if(m.candidates_extracted!=null) parts.push('candidates '+m.candidates_extracted);
+    if(m.listings_accepted!=null) parts.push('accepted '+m.listings_accepted);
+    if(m.new_listings!=null) parts.push('new '+m.new_listings);
+    if(m.failed!=null) parts.push('failed '+m.failed);
+    if(m.outcome_breakdown){
+      const ob = Object.entries(m.outcome_breakdown).map(e=>e[0]+':'+e[1]).join(' ');
+      if(ob) parts.push('['+ob+']');
+    }
+    return parts.join(' · ') || (j.message||'');
+  }
+  return j.message||'';
+}
 // Live-update the Jobs panel every 3s so a running discovery/scan shows progress.
 async function refreshJobs(){
   try{
     const r = await fetch('/api/jobs'); const data = await r.json();
-    let running = false;
     document.querySelectorAll('#jobs-body tr').forEach(tr=>{
-      const j = data[tr.dataset.job]; if(!j) return;
-      if(j.state==='RUNNING') running = true;
+      const jt = tr.dataset.job; const j = data[jt]; if(!j) return;
       tr.querySelector('.job-state').textContent = j.state;
       tr.querySelector('.job-progress').textContent = (j.queries_done||0)+'/'+(j.queries_total||0);
-      tr.querySelector('.job-new').textContent = j.new_domains||0;
-      tr.querySelector('.job-src').textContent = j.sources_added||0;
       tr.querySelector('.job-dur').textContent = j.duration_seconds? Math.round(j.duration_seconds)+'s':'–';
-      tr.querySelector('.job-msg').textContent = j.error? j.error.slice(0,80) : (j.message||'');
+      const det = tr.querySelector('.job-details');
+      det.textContent = j.error? j.error.slice(0,120) : jobDetails(jt, j);
     });
   }catch(e){}
 }

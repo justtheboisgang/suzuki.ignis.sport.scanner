@@ -32,3 +32,7 @@ class ScanRun(Base):
 
     errors: Mapped[list | None] = mapped_column(JSON, default=list)
     status: Mapped[str] = mapped_column(String(20), default="running")
+    # Transparent per-source outcome tally (blocked/403/429/404/js/robots/...).
+    outcome_breakdown: Mapped[dict | None] = mapped_column(JSON)
+    candidates_extracted: Mapped[int] = mapped_column(Integer, default=0)
+    listings_accepted: Mapped[int] = mapped_column(Integer, default=0)

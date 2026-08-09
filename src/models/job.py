@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, Integer, String, Text
+from sqlalchemy import DateTime, Float, Integer, String, Text, JSON
 from sqlalchemy.orm import Mapped, mapped_column
 
 from .base import Base, updated_column
@@ -29,3 +29,5 @@ class JobStatus(Base):
     duration_seconds: Mapped[float | None] = mapped_column(Float)
     message: Mapped[str | None] = mapped_column(Text)
     error: Mapped[str | None] = mapped_column(Text)
+    # Job-type-specific counters (scan vs discovery need different fields).
+    metrics: Mapped[dict | None] = mapped_column(JSON)

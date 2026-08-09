@@ -112,10 +112,23 @@ def run_scan(limit: int | None = None, force: bool = False,
     with session_scope() as session:
         due = _due_sources(session, limit, force)
     log.info("Scan %s starting over %d sources", scan_id, len(due))
-    if progress_cb:
-        progress_cb(queries_total=len(due), queries_done=0)
 
-    totals = dict(new=0, changed=0, seen=0, ai=0, pages=0, ok=0, failed=0)
+    totals = dict(new=0, changed=0, seen=0, ai=0, pages=0, ok=0, failed=0,
+                  candidates=0)
+    # Transparent per-source outcome tally (P1).
+    outcomes: dict[str, int] = {}
+
+    def _metrics(done):
+        return {"sources_total": len(due), "sources_done": done,
+                "pages_fetched": totals["pages"],
+                "candidates_extracted": totals["candidates"],
+                "listings_accepted": totals["seen"],
+                "new_listings": totals["new"],
+                "ai_calls": totals["ai"], "failed": totals["failed"],
+                "outcome_breakdown": dict(outcomes)}
+
+    if progress_cb:
+        progress_cb(metrics=_metrics(0), message="scan starting")
 
     with HttpFetcher(settings) as fetcher:
         for idx, source in enumerate(due, start=1):
@@ -128,11 +141,14 @@ def run_scan(limit: int | None = None, force: bool = False,
                 candidates, pages = crawl_source(ctx, source)
             except Exception as exc:  # a bad source must not kill the scan
                 crawl_error = str(exc)
+                ctx.outcome = "ERROR"
                 log.warning("source %s crawl error: %s", source.domain, exc)
                 errors.append(f"{source.domain}: {exc}")
 
             totals["pages"] += pages
+            totals["candidates"] += len(candidates)
             errors.extend(ctx.errors)
+            outcomes[ctx.outcome] = outcomes.get(ctx.outcome, 0) + 1
             result_count = 0
 
             # 2) Ingest each candidate (each does its own short write).
@@ -161,7 +177,8 @@ def run_scan(limit: int | None = None, force: bool = False,
                 log.warning("%s: %s", source.domain, diag_note)
 
             # 4) SHORT WRITE: update this source's health/counters/schedule.
-            failed = crawl_error is not None
+            failed = crawl_error is not None or ctx.outcome in (
+                "HTTP_403", "HTTP_429", "HTTP_404", "ERROR", "ROBOTS")
             run_write(lambda s, sid=source.id, rc=result_count, pt=prev_typical,
                       failed=failed, note=diag_note, freq=source.check_frequency:
                       _finalize_source(s, sid, rc, pt, failed, note, freq),
@@ -171,16 +188,20 @@ def run_scan(limit: int | None = None, force: bool = False,
             else:
                 totals["ok"] += 1
 
-            if progress_cb and idx % 5 == 0:
-                progress_cb(queries_done=idx, results=totals["seen"],
-                            new_domains=totals["new"])
+            if progress_cb and (idx % 3 == 0 or idx == len(due)):
+                progress_cb(metrics=_metrics(idx), message=f"source {idx}/{len(due)}")
 
     # 5) Finalise the ScanRun row.
-    run_write(lambda s: _finalize_scan_run(s, run_id, totals, errors),
+    run_write(lambda s: _finalize_scan_run(s, run_id, totals, errors, outcomes),
               label="scan.finalize", swallow=True)
 
     summary = {"scan_id": scan_id, "sources": len(due), **totals,
-               "errors": len(errors)}
+               "outcome_breakdown": outcomes, "errors": len(errors),
+               "listings_accepted": totals["seen"]}
+    log.info("SCAN SUMMARY %s: sources=%d pages=%d candidates=%d accepted=%d "
+             "new=%d failed=%d outcomes=%s", scan_id, len(due), totals["pages"],
+             totals["candidates"], totals["seen"], totals["new"],
+             totals["failed"], outcomes)
     removed = recheck_disappeared()
     summary["removed"] = removed
     if backup:
@@ -196,7 +217,8 @@ def _create_scan_run(session, scan_id: str) -> int:
     return run.id
 
 
-def _finalize_scan_run(session, run_id: int, totals: dict, errors: list) -> None:
+def _finalize_scan_run(session, run_id: int, totals: dict, errors: list,
+                       outcomes: dict) -> None:
     run = session.get(ScanRun, run_id)
     if not run:
         return
@@ -208,6 +230,9 @@ def _finalize_scan_run(session, run_id: int, totals: dict, errors: list) -> None
     run.changed_listings = totals["changed"]
     run.ai_calls = totals["ai"]
     run.sources_attempted = totals["ok"] + totals["failed"]
+    run.candidates_extracted = totals.get("candidates", 0)
+    run.listings_accepted = totals["seen"]
+    run.outcome_breakdown = outcomes
     run.errors = errors[:200]
     run.end_time = datetime.now(timezone.utc)
     run.status = "done"

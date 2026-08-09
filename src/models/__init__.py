@@ -19,6 +19,7 @@ from .scan import ScanRun
 from .feedback import Feedback, Notification
 from .provider import ProviderUsage, DomainDiscovery
 from .job import JobStatus
+from .search_hit import SearchHit
 
 __all__ = [
     "Base",
@@ -42,4 +43,5 @@ __all__ = [
     "ProviderUsage",
     "DomainDiscovery",
     "JobStatus",
+    "SearchHit",
 ]
