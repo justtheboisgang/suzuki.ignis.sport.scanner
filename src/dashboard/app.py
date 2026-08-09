@@ -34,6 +34,15 @@ from ..utils.logging import get_logger  # noqa: E402
 _log = get_logger("dashboard")
 
 
+def _budget_states() -> dict:
+    """Search + AI budget usage for the dashboard (used / budget / remaining)."""
+    try:
+        from ..discovery import budget
+        return budget.all_budget_states()
+    except Exception:  # pragma: no cover
+        return {}
+
+
 def _start_job(job_type: str, fn) -> bool:
     """Start a coordinated heavy job in the background. Returns False if a job
     is already running (discovery or scan)."""
@@ -67,12 +76,15 @@ def create_app() -> FastAPI:
                                                order_by="newest", limit=15),
                 "best": Q.filter_listings(s, min_confidence=60,
                                           order_by="opportunity", limit=15),
-                "uncertain": Q.filter_listings(s, min_confidence=40, limit=15,
+                # Uncertain = strictly the 40–59 band (never 60+).
+                "uncertain": Q.filter_listings(s, min_confidence=40,
+                                               max_confidence=59, limit=15,
                                                order_by="confidence"),
                 "notifications": Q.recent_notifications(s, 12),
                 "new_sources": Q.newest_sources(s, 12),
                 "price_drops": Q.price_drops(s, 12),
                 "jobs": _jobs.all_job_status(),
+                "budgets": _budget_states(),
             }
             return templates.TemplateResponse(request, "home.html", ctx)
         finally:

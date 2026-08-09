@@ -25,8 +25,29 @@
   </form>
   <span class="muted">Last scan:
     {% if stats.last_scan %}{{ stats.last_scan.start_time.strftime('%Y-%m-%d %H:%M') }}
-      · {{ stats.last_scan.new_listings }} new · {{ stats.last_scan.pages_checked }} pages
-      · {{ stats.last_scan.ai_calls }} AI calls{% else %}never{% endif %}</span>
+      · {{ stats.last_scan.pages_checked }} pages
+      · {{ stats.last_scan.candidates_extracted }} parsed
+      · {{ stats.last_scan.new_listings }} new
+      · {{ stats.last_scan.sources_failed }} failed
+      · {{ stats.last_scan.ai_calls }} AI{% else %}never{% endif %}</span>
+</div>
+
+<h2 class="section-title">💳 API budgets (this month)</h2>
+<div class="card">
+  <table><thead><tr><th>Provider</th><th>Used</th><th>Budget</th><th>Remaining</th></tr></thead><tbody>
+  {% set b = budgets %}
+  {% if b.brave %}<tr><td>Brave (requests)</td><td>{{ b.brave.used }}</td>
+     <td>{{ b.brave.budget or '∞' }}</td>
+     <td>{{ b.brave.remaining if b.brave.remaining is not none else '∞' }}</td></tr>{% endif %}
+  {% if b.serpapi %}<tr><td>SerpApi (requests)</td><td>{{ b.serpapi.used }}</td>
+     <td>{{ b.serpapi.budget or '∞' }}</td>
+     <td>{{ b.serpapi.remaining if b.serpapi.remaining is not none else '∞' }}</td></tr>{% endif %}
+  {% if b.anthropic %}<tr><td>Anthropic (USD est.)</td>
+     <td>{{ '%.2f'|format(b.anthropic.used_usd or 0) }}</td>
+     <td>{{ b.anthropic.budget_usd or '∞' }}</td>
+     <td>—</td></tr>{% endif %}
+  </tbody></table>
+  <div class="muted" style="margin-top:6px">Only successful requests count toward the budget.</div>
 </div>
 
 <h2 class="section-title">⚙️ Jobs</h2>
@@ -120,8 +141,12 @@ function jobDetails(jt, j){
   if(jt==='scan'){
     const parts = [];
     if(m.pages_fetched!=null) parts.push('pages '+m.pages_fetched);
-    if(m.candidates_extracted!=null) parts.push('candidates '+m.candidates_extracted);
-    if(m.listings_accepted!=null) parts.push('accepted '+m.listings_accepted);
+    if(m.parsed_candidates!=null) parts.push('parsed '+m.parsed_candidates);
+    if(m.rejected_other_model!=null) parts.push('rejected_other '+m.rejected_other_model);
+    if(m.normal_ignis!=null) parts.push('normal_ignis '+m.normal_ignis);
+    if(m.possible_sport!=null) parts.push('possible '+m.possible_sport);
+    if(m.confirmed_sport!=null) parts.push('confirmed '+m.confirmed_sport);
+    if(m.ai_reviewed!=null) parts.push('AI '+m.ai_reviewed);
     if(m.new_listings!=null) parts.push('new '+m.new_listings);
     if(m.failed!=null) parts.push('failed '+m.failed);
     if(m.outcome_breakdown){

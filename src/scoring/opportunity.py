@@ -28,6 +28,11 @@ class OpportunityResult:
 
 
 def compute_opportunity(listing: Listing, ai_analysis: dict | None = None) -> OpportunityResult:
+    # Contamination guard: only score plausible Ignis(-Sport) candidates. A
+    # non-Ignis or clearly-not-Sport listing is not an "opportunity" at all.
+    if (listing.vehicle_match_confidence or 0) < 40:
+        return OpportunityResult(0, {"not_applicable": "match confidence < 40"})
+
     breakdown: dict[str, float] = {}
     score = 50.0
     breakdown["base"] = 50.0
@@ -37,15 +42,18 @@ def compute_opportunity(listing: Listing, ai_analysis: dict | None = None) -> Op
     score += conf_pts
     breakdown["match_confidence"] = round(conf_pts, 1)
 
-    # --- Price vs market. ------------------------------------------------
-    if listing.price_eur:
+    # --- Price vs market. Only a VALID price counts; a suspect/unknown price
+    #     must never be rewarded as a bargain (fixes €1 → Opportunity 89).
+    price_ok = (getattr(listing, "price_parse_status", "OK") == "OK"
+                and listing.price_eur and listing.price_eur >= 200)
+    if price_ok:
         ratio = listing.price_eur / _MARKET_MEDIAN_EUR
-        # Cheaper than market → up to +18; pricey → down to -12.
         price_pts = max(-12.0, min(18.0, (1.0 - ratio) * 30))
         score += price_pts
         breakdown["price_vs_market"] = round(price_pts, 1)
     else:
         breakdown["price_vs_market"] = 0.0
+        breakdown["price_note"] = getattr(listing, "price_parse_status", "OK")
 
     # --- Mileage. --------------------------------------------------------
     if listing.mileage_km is not None:

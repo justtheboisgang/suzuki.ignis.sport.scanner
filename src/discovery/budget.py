@@ -25,11 +25,17 @@ def _month_start() -> datetime:
                                               microsecond=0)
 
 
-def provider_request_count(provider: str) -> int:
+def provider_request_count(provider: str, only_ok: bool = True) -> int:
+    """Successful API requests this month (the ones that actually consume quota).
+    Failed/rate-limited/retry rows are excluded by default so an error storm
+    can't falsely exhaust the guard (P9)."""
     with session_scope() as s:
-        return (s.query(ProviderUsage)
-                .filter(ProviderUsage.provider == provider,
-                        ProviderUsage.created_at >= _month_start()).count())
+        q = s.query(ProviderUsage).filter(
+            ProviderUsage.provider == provider,
+            ProviderUsage.created_at >= _month_start())
+        if only_ok:
+            q = q.filter(ProviderUsage.ok.is_(True))
+        return q.count()
 
 
 def provider_budget(provider: str) -> int:

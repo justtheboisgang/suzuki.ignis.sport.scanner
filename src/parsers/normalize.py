@@ -120,6 +120,37 @@ def parse_price(text: str | None, default_currency: str | None = None
     return max(plausible), currency
 
 
+# Phrases meaning "price on request" → price is genuinely unknown.
+_ON_REQUEST = (
+    "op aanvraag", "prijs op aanvraag", "auf anfrage", "preis auf anfrage",
+    "price on request", "poa", "prezzo su richiesta", "prix sur demande",
+    "precio a consultar", "sob consulta", "na dotaz", "cena dohodou",
+)
+
+
+def price_sanity(price_eur: float | None, text: str | None,
+                 has_authoritative_offer: bool = False) -> tuple[float | None, str]:
+    """Sanity-check an extracted EUR price. Returns (price_eur, status) where
+    status ∈ OK / SUSPECT / UNKNOWN.
+
+    A real used car is never €1 — such values are placeholders, financing
+    figures, image counters or index numbers, not the sale price. Unless a
+    clearly authoritative source vouches for it, an implausible price becomes
+    UNKNOWN so downstream scoring never treats it as a bargain.
+    """
+    t = (text or "").lower()
+    if any(p in t for p in _ON_REQUEST):
+        return None, "UNKNOWN"
+    if price_eur is None:
+        return None, "UNKNOWN"
+    if price_eur < 200:
+        # €1/€100 placeholders, monthly-payment fragments, etc.
+        return (price_eur, "SUSPECT") if has_authoritative_offer else (None, "SUSPECT")
+    if price_eur > 250_000:
+        return (price_eur, "SUSPECT") if has_authoritative_offer else (None, "SUSPECT")
+    return price_eur, "OK"
+
+
 def to_eur(amount: float | None, currency: str | None) -> float | None:
     if amount is None:
         return None

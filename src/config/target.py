@@ -94,6 +94,18 @@ class IgnisSportProfile:
         "jdm kei car",
     )
 
+    # OTHER Suzuki (and look-alike) models that must HARD-reject an Ignis match.
+    # Matched as whole words/codes against the vehicle's own identity text
+    # (title/description), never against surrounding page context.
+    other_models: tuple[str, ...] = (
+        "swift", "jimny", "vitara", "grand vitara", "samurai", "sj410", "sj413",
+        "sj 410", "sj 413", "alto", "wagon r", "wagonr", "wagon-r", "splash",
+        "baleno", "sx4", "sx-4", "s-cross", "scross", "liana", "kizashi",
+        "celerio", "across", "swace", "carry", "cappuccino", "cara", "x-90",
+        "xl7", "xl-7", "x90", "esteem", "aerio", "forenza", "reno", "verona",
+        "sidekick", "vitara brezza", "ertiga", "ciaz", "fronx", "jimny sierra",
+    )
+
     negative_terms: tuple[str, ...] = field(
         default_factory=lambda: (
             # These signal the *new-generation* Ignis (2016+), not our HT81S.

@@ -26,7 +26,12 @@ from ..models.history import PriceHistory, StatusHistory
 from ..models.listing import Listing
 from ..models.source import Source
 from ..parsers.html_generic import RawListing
-from ..parsers.normalize import detect_language, normalize_text, to_eur
+from ..parsers.normalize import (
+    detect_language,
+    normalize_text,
+    price_sanity,
+    to_eur,
+)
 from ..scoring.opportunity import compute_opportunity
 from ..utils.hashing import content_hash, normalize_url, stable_id
 from ..utils.lhd_rhd import infer_lhd_rhd
@@ -64,11 +69,17 @@ def process_candidate(raw: RawListing, source: Source | None) -> IngestResult:
     """
     settings = get_settings()
     text = raw.combined_text()
-
-    pf = prefilter(text, year=raw.year, power_kw=raw.power_kw,
-                   power_hp=raw.power_hp, displacement_cc=raw.displacement_cc)
+    # Identity = the vehicle's OWN text (title + its description). Page context
+    # (anchor siblings) is passed only as weak corroboration — this is what
+    # stops "Suzuki Wagon R" scoring as an Ignis Sport.
+    identity = f"{raw.title or ''} {raw.description or ''}"
+    pf = prefilter(identity, raw.raw_text or "", year=raw.year,
+                   power_kw=raw.power_kw, power_hp=raw.power_hp,
+                   displacement_cc=raw.displacement_cc)
     if not pf.relevant:
-        return IngestResult(listing=None, bucket=pf.bucket, is_ignis=False)
+        # OTHER_MODEL / IRRELEVANT — hard-rejected, never stored as a candidate.
+        return IngestResult(listing=None, bucket=pf.bucket,
+                            is_ignis=pf.is_ignis)
 
     baseline = score_confidence(pf, year=raw.year, power_kw=raw.power_kw,
                                 power_hp=raw.power_hp,
@@ -81,7 +92,7 @@ def process_candidate(raw: RawListing, source: Source | None) -> IngestResult:
     internal = stable_id(normalize_url(raw.url))
 
     # --- NETWORK/AI PHASE (no DB transaction open) -----------------------
-    if pf.bucket == "NEEDS_AI":
+    if pf.needs_ai:
         ai_verdict = analyze_candidate(
             title=raw.title, description=raw.description or raw.raw_text,
             pf=pf, baseline=baseline, year=raw.year, power_kw=raw.power_kw,
@@ -103,12 +114,15 @@ def process_candidate(raw: RawListing, source: Source | None) -> IngestResult:
                                    country=raw.country, seller_type=seller_type,
                                    target_id=internal)
 
-    if pf.bucket == "NEEDS_AI" and is_sport_candidate:
+    if pf.needs_ai and is_sport_candidate:
         classification = "MISLABELLED_SPORT_CANDIDATE"
 
     # Precompute plain column values so the write callable is retry-safe.
     desc = raw.description or raw.raw_text or ""
-    price_eur = to_eur(raw.price, raw.currency)
+    price_eur_raw = to_eur(raw.price, raw.currency)
+    # Guard against €1 placeholders / "price on request" / financing figures.
+    price_eur, price_status = price_sanity(price_eur_raw, text,
+                                           has_authoritative_offer=False)
     lhd, lhd_conf = infer_lhd_rhd(text, raw.country)
     src_is_dealer = bool(source and source.source_type in _DEALER_TYPES)
     ai_analysis = None
@@ -125,7 +139,8 @@ def process_candidate(raw: RawListing, source: Source | None) -> IngestResult:
         displacement_cc=raw.displacement_cc, power_kw=raw.power_kw,
         power_hp=raw.power_hp, fuel=raw.fuel, transmission=raw.transmission,
         color=raw.color, price_original=raw.price, currency=raw.currency,
-        price_eur=price_eur, country=raw.country, seller_type=seller_type,
+        price_eur=price_eur, price_parse_status=price_status,
+        country=raw.country, seller_type=seller_type,
         seller_website=(source.base_url if src_is_dealer else None),
         listing_url=raw.url,
         original_listing_url=(raw.url if src_is_dealer else None),

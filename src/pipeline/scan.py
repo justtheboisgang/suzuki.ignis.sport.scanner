@@ -115,17 +115,24 @@ def run_scan(limit: int | None = None, force: bool = False,
 
     totals = dict(new=0, changed=0, seen=0, ai=0, pages=0, ok=0, failed=0,
                   candidates=0)
-    # Transparent per-source outcome tally (P1).
+    # Transparent per-source outcome tally (P1) and classification funnel (P8).
     outcomes: dict[str, int] = {}
+    funnel = dict(rejected_other_model=0, irrelevant=0, normal_ignis=0,
+                  possible_sport=0, confirmed_sport=0, unknown=0, ai_reviewed=0)
+    _BUCKET_KEY = {"OTHER_MODEL": "rejected_other_model", "IRRELEVANT": "irrelevant",
+                   "NORMAL_IGNIS": "normal_ignis",
+                   "POSSIBLE_IGNIS_SPORT": "possible_sport",
+                   "CLEAR_IGNIS_SPORT": "confirmed_sport", "UNKNOWN": "unknown"}
 
     def _metrics(done):
         return {"sources_total": len(due), "sources_done": done,
                 "pages_fetched": totals["pages"],
-                "candidates_extracted": totals["candidates"],
+                "parsed_candidates": totals["candidates"],
                 "listings_accepted": totals["seen"],
                 "new_listings": totals["new"],
                 "ai_calls": totals["ai"], "failed": totals["failed"],
-                "outcome_breakdown": dict(outcomes)}
+                "outcome_breakdown": dict(outcomes),
+                **funnel}
 
     if progress_cb:
         progress_cb(metrics=_metrics(0), message="scan starting")
@@ -154,12 +161,16 @@ def run_scan(limit: int | None = None, force: bool = False,
             # 2) Ingest each candidate (each does its own short write).
             for raw in candidates:
                 res = process_candidate(raw, source)
+                key = _BUCKET_KEY.get(res.bucket)
+                if key:
+                    funnel[key] += 1
+                if res.used_ai:
+                    funnel["ai_reviewed"] += 1
+                    totals["ai"] += 1
                 if res.listing is None:
-                    continue
+                    continue  # OTHER_MODEL / IRRELEVANT — not stored
                 totals["seen"] += 1
                 result_count += 1
-                if res.used_ai:
-                    totals["ai"] += 1
                 if res.is_new:
                     totals["new"] += 1
                     _alert_for_hit(manager, res.listing, source)
@@ -196,12 +207,17 @@ def run_scan(limit: int | None = None, force: bool = False,
               label="scan.finalize", swallow=True)
 
     summary = {"scan_id": scan_id, "sources": len(due), **totals,
+               "parsed_candidates": totals["candidates"],
                "outcome_breakdown": outcomes, "errors": len(errors),
-               "listings_accepted": totals["seen"]}
-    log.info("SCAN SUMMARY %s: sources=%d pages=%d candidates=%d accepted=%d "
-             "new=%d failed=%d outcomes=%s", scan_id, len(due), totals["pages"],
-             totals["candidates"], totals["seen"], totals["new"],
-             totals["failed"], outcomes)
+               "listings_accepted": totals["seen"], **funnel}
+    log.info("SCAN SUMMARY %s: sources=%d pages=%d parsed_candidates=%d "
+             "accepted=%d new=%d failed=%d | funnel: other=%d normal=%d "
+             "possible=%d confirmed=%d ai=%d | outcomes=%s",
+             scan_id, len(due), totals["pages"], totals["candidates"],
+             totals["seen"], totals["new"], totals["failed"],
+             funnel["rejected_other_model"], funnel["normal_ignis"],
+             funnel["possible_sport"], funnel["confirmed_sport"],
+             funnel["ai_reviewed"], outcomes)
     removed = recheck_disappeared()
     summary["removed"] = removed
     if backup:

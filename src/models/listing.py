@@ -47,6 +47,8 @@ class Listing(Base):
     price_original: Mapped[float | None] = mapped_column(Float)
     currency: Mapped[str | None] = mapped_column(String(8))
     price_eur: Mapped[float | None] = mapped_column(Float, index=True)
+    # OK / SUSPECT / UNKNOWN — guards against €1 placeholders & "price on request".
+    price_parse_status: Mapped[str] = mapped_column(String(12), default="OK")
 
     # --- Location / seller ----------------------------------------------
     country: Mapped[str | None] = mapped_column(String(4), index=True)

@@ -25,11 +25,13 @@ def _aware(dt):
     return dt
 
 
-def filter_listings(session: Session, *, min_confidence=0, country=None,
-                    max_price=None, min_price=None, max_mileage=None,
+def filter_listings(session: Session, *, min_confidence=0, max_confidence=None,
+                    country=None, max_price=None, min_price=None, max_mileage=None,
                     min_year=None, seller_type=None, status=None, lhd=None,
                     order_by="opportunity", limit=200) -> list[Listing]:
     q = session.query(Listing).filter(Listing.vehicle_match_confidence >= min_confidence)
+    if max_confidence is not None:
+        q = q.filter(Listing.vehicle_match_confidence <= max_confidence)
     if country:
         q = q.filter(Listing.country == country.upper())
     if max_price:

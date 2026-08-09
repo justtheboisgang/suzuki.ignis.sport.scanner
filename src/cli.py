@@ -72,6 +72,14 @@ def cmd_serve(args):
     settings = get_settings()
     # 1-2. DB present? initialise + run migrations. 3. scheduler. Both are done
     # by build_scheduler (which calls init_db + seed_sources_into_db).
+    # One-shot cleanup of any pre-existing false positives / mis-categorised
+    # sources with the current classifier (safe + idempotent).
+    try:
+        from .pipeline.reclassify import reclassify_all
+        log.info("Startup reclassification: %s", reclassify_all())
+    except Exception as exc:  # never block startup on this
+        log.warning("startup reclassify skipped: %s", exc)
+
     from .scheduler.runner import build_scheduler
     scheduler = build_scheduler(blocking=False)
     scheduler.start()  # background thread: keeps the 4 daily scans alive
@@ -126,6 +134,11 @@ def cmd_audit_sources(args):
     for r in rows:
         print(f"{r['country']:<18}{r['total_sources']:>6}{r['working']:>8}  "
               f"{', '.join(r['missing_categories']) or '—'}")
+
+
+def cmd_reclassify(args):
+    from .pipeline.reclassify import reclassify_all
+    print(json.dumps(reclassify_all(), indent=2, default=str))
 
 
 def cmd_real_report(args):
@@ -260,6 +273,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("audit-sources", help="per-country source-coverage gap audit")\
         .set_defaults(func=cmd_audit_sources)
+
+    sub.add_parser("reclassify", help="re-evaluate stored listings + sources with "
+                                      "the current classifier")\
+        .set_defaults(func=cmd_reclassify)
 
     sp = sub.add_parser("real-report", help="print the Real-World Validation Report")
     sp.add_argument("--json", action="store_true")

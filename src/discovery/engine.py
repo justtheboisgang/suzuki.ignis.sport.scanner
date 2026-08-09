@@ -187,8 +187,9 @@ class DiscoveryEngine:
             for idx, gq in enumerate(planned, start=1):
                 if not any(budget.can_request(p, 1) for p in self.multi.names):
                     m["skipped_budget"] = total - m["executed"]
-                    log.warning("Search budget exhausted; stopping at query "
-                                "%d/%d.", idx, total)
+                    states = {p: budget.budget_state(p) for p in self.multi.names}
+                    log.warning("Search budget exhausted at query %d/%d; states=%s",
+                                idx, total, states)
                     break
 
                 pages = (self.settings.search_pages_high_value if gq.high_value
