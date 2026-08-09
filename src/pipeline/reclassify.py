@@ -18,19 +18,21 @@ from ..classification.prefilter import prefilter
 from ..database.base import session_scope
 from ..database.writer import run_write
 from ..discovery.classify import MONITORABLE, domain_category, is_aggregator_domain
-from ..models.enums import Classification
+from ..models.enums import Classification, ListingStatus
 from ..models.listing import Listing
 from ..models.source import Source
 from ..parsers.normalize import price_sanity
+from ..parsers.urltype import url_quality
 from ..scoring.opportunity import compute_opportunity
 from ..utils.logging import get_logger
+from .expansion import finalize_links
 
 log = get_logger("pipeline.reclassify")
 
 
 def reclassify_listings(batch: int = 500) -> dict:
     counts = {"total": 0, "not_ignis": 0, "normal_ignis": 0, "possible": 0,
-              "confirmed": 0, "price_fixed": 0}
+              "confirmed": 0, "price_fixed": 0, "unresolved_urls": 0}
     with session_scope() as s:
         ids = [i for (i,) in s.query(Listing.id).all()]
 
@@ -70,6 +72,18 @@ def reclassify_listings(batch: int = 500) -> dict:
                         counts["price_fixed"] += 1
                     lst.price_eur = new_price
                 lst.price_parse_status = status
+
+                # Recompute URL quality + best canonical link, and hide listings
+                # whose only known URL is a search/inventory/homepage page.
+                lst.listing_url_quality = url_quality(lst.listing_url)
+                finalize_links(lst)
+                if lst.external_detail_url is None:
+                    counts["unresolved_urls"] += 1
+                    if lst.listing_status in (ListingStatus.ACTIVE.value,
+                                              ListingStatus.MAYBE_ACTIVE.value):
+                        lst.listing_status = ListingStatus.UNRESOLVED.value
+                elif lst.listing_status == ListingStatus.UNRESOLVED.value:
+                    lst.listing_status = ListingStatus.ACTIVE.value
 
                 # Recompute opportunity with the guards.
                 analysis = (lst.ai_analysis or {}).get("analyst") if lst.ai_analysis else None

@@ -28,8 +28,14 @@ def _aware(dt):
 def filter_listings(session: Session, *, min_confidence=0, max_confidence=None,
                     country=None, max_price=None, min_price=None, max_mileage=None,
                     min_year=None, seller_type=None, status=None, lhd=None,
-                    order_by="opportunity", limit=200) -> list[Listing]:
+                    order_by="opportunity", limit=200, only_resolved=True
+                    ) -> list[Listing]:
     q = session.query(Listing).filter(Listing.vehicle_match_confidence >= min_confidence)
+    if only_resolved:
+        # Never surface UNRESOLVED candidates or ones whose only URL is a
+        # search/inventory/homepage page as normal active listings.
+        q = q.filter(Listing.listing_status != ListingStatus.UNRESOLVED.value)
+        q = q.filter(~Listing.listing_url_quality.in_(["SEARCH_PAGE", "HOMEPAGE"]))
     if max_confidence is not None:
         q = q.filter(Listing.vehicle_match_confidence <= max_confidence)
     if country:

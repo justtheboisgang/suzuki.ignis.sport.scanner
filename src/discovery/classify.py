@@ -17,7 +17,6 @@ from __future__ import annotations
 import re
 
 from ..config.countries import COUNTRIES
-from ..parsers.html_generic import extract_listings_from_html
 from ..utils.hashing import domain_of
 from .queries import BIG_PLATFORMS
 
@@ -118,51 +117,37 @@ def domain_category(domain: str, text: str = "") -> dict:
             "reasons": reasons}
 
 
+_PAGE_TYPE_TO_HIT = {
+    "INDIVIDUAL_LISTING": "LISTING",
+    "SEARCH_RESULTS": "DEALER_INVENTORY",   # per-card ingest, page never a listing
+    "DEALER_INVENTORY": "DEALER_INVENTORY",
+    "HOMEPAGE": "HOMEPAGE",
+    "ARTICLE": "ARTICLE",
+    "OTHER": "IRRELEVANT",
+}
+
+
 def classify_url_type(url: str, html: str, domain: str | None = None) -> dict:
-    """Classify a fetched URL. Returns {type, listings, reason}. `listings` is
-    the extracted RawListing candidates (used when type == LISTING)."""
+    """Classify a fetched URL using the card-isolated extractor. Returns
+    {type, page_type, listings, reason}. A search/inventory page is NEVER
+    reported as a single LISTING — only its per-card candidates are returned."""
+    from ..parsers.html_generic import extract_page
     dom = domain or domain_of(url)
     low_html = (html or "").lower()
-    low_url = (url or "").lower()
 
-    listings = extract_listings_from_html(html or "", url, dom) if html else []
-    ignis_listings = [rl for rl in listings
-                      if "ignis" in (rl.title or "").lower()
-                      or "ignis" in (rl.raw_text or "").lower()
-                      or "ht81s" in (rl.combined_text() or "").lower()]
+    listings, page_type = extract_page(html or "", url, dom)
+    hit_type = _PAGE_TYPE_TO_HIT.get(page_type, "IRRELEVANT")
 
-    # A single vehicle detail page: URL looks like a listing AND we extracted a
-    # concrete Ignis candidate with a price or specs.
-    strong_listing = any(h in low_url for h in _LISTING_URL_HINTS) or bool(ignis_listings)
-    concrete = [rl for rl in ignis_listings
-                if rl.price or rl.mileage_km or rl.year or rl.power_kw]
-
-    if concrete and (strong_listing or len(concrete) == 1):
-        return {"type": "LISTING", "listings": concrete,
-                "reason": "Ignis candidate with price/specs on a detail-like URL"}
-
-    if any(h in low_url for h in _INVENTORY_URL_HINTS) or len(listings) >= 3:
-        return {"type": "DEALER_INVENTORY", "listings": listings,
-                "reason": "inventory/search-style URL or many listings"}
-
-    if any(m in low_html for m in _FORUM_MARKERS) or any(
-            m in low_url for m in _FORUM_MARKERS):
-        return {"type": "FORUM_POST", "listings": ignis_listings, "reason": "forum markers"}
-
-    if any(m in low_html or m in low_url for m in _ARTICLE_MARKERS):
-        return {"type": "ARTICLE", "listings": [], "reason": "article markers"}
-
+    # Parts/tuning domains are discovery-only regardless of stray car cards.
     cat = domain_category(dom, low_html[:4000])
-    if cat["category"] == DISCOVERY_ONLY and any(
-            t in f"{dom}" for t in ("teil", "parts", "tuning", "fahrwerk",
-                                    "alkatresz", "zubehor", "zubehör")):
-        return {"type": "PARTS_PAGE", "listings": [], "reason": "parts/tuning domain"}
+    if hit_type in ("IRRELEVANT", "HOMEPAGE") and cat["category"] == DISCOVERY_ONLY \
+            and any(t in dom for t in ("teil", "parts", "tuning", "fahrwerk",
+                                       "alkatresz", "zubehor", "zubehör")):
+        return {"type": "PARTS_PAGE", "page_type": page_type, "listings": [],
+                "reason": "parts/tuning domain"}
 
-    if low_url.rstrip("/").endswith(dom.rstrip("/")) or low_url.count("/") <= 3:
-        return {"type": "HOMEPAGE", "listings": listings, "reason": "root/homepage URL"}
-
-    return {"type": "IRRELEVANT" if not ignis_listings else "DEALER_INVENTORY",
-            "listings": listings, "reason": "no listing/inventory signals"}
+    return {"type": hit_type, "page_type": page_type, "listings": listings,
+            "reason": f"page_type={page_type}, {len(listings)} card(s)"}
 
 
 # --- Country detection -----------------------------------------------------

@@ -1,10 +1,15 @@
-"""Generic HTML listing extraction.
+"""Card-isolated HTML extraction.
 
-Two responsibilities:
-  1. Turn a fetched page into candidate `RawListing` objects (JSON-LD first,
-     then anchor/heading heuristics) — deliberately source-agnostic so a brand
-     new dealer site yields *something* without a bespoke parser.
-  2. Provide the `RawListing` dataclass that the rest of the pipeline consumes.
+Hard rule (fixes the "Suzuki Bus search page stored as a listing" bug): a
+search-/inventory page is NEVER turned into a single vehicle listing. Instead
+every result CARD is extracted independently, each with:
+  * its own title (from the card, never the page <title> or the search query),
+  * its own EXACT detail href (absolute), and
+  * its own price/mileage/year/text — no other card's text leaks in.
+
+If the page is a search/inventory page but no per-card detail links can be
+found, we return ZERO candidates (PARSER_UNRESOLVED) rather than fabricating
+listings. Precision over recall on unstructured pages.
 """
 
 from __future__ import annotations
@@ -23,32 +28,30 @@ from .normalize import (
     parse_price,
     parse_year,
 )
+from .urltype import (
+    EXACT_DETAIL,
+    HOMEPAGE,
+    LIKELY_DETAIL,
+    SEARCH_PAGE,
+    UNKNOWN,
+    url_quality,
+)
+from ..utils.hashing import normalize_url
 
-# Words that, in an anchor/heading, suggest a car listing worth inspecting.
-_INTEREST = re.compile(r"\b(ignis|suzuki|ht81s)\b", re.I)
+# Page-type constants.
+INDIVIDUAL_LISTING = "INDIVIDUAL_LISTING"
+SEARCH_RESULTS = "SEARCH_RESULTS"
+DEALER_INVENTORY = "DEALER_INVENTORY"
+PAGE_HOMEPAGE = "HOMEPAGE"
+ARTICLE = "ARTICLE"
+OTHER = "OTHER"
 
-
-def _coerce_km(value) -> int | None:
-    """Coerce a JSON-LD odometer value (which may be a bare number, a numeric
-    string, or "118000 km") into an integer kilometre reading."""
-    if value is None:
-        return None
-    s = str(value)
-    km = parse_mileage(s)
-    if km is not None:
-        return km
-    digits = re.sub(r"[^\d]", "", s)
-    if digits:
-        n = int(digits)
-        if 0 <= n <= 1_000_000:
-            return n
-    return None
+_ARTICLE_MARKERS = ("article:published_time", "datepublished", "/news/", "/blog/")
 
 
 @dataclass
 class RawListing:
-    """Everything a crawler managed to extract for one candidate vehicle,
-    before classification / normalisation into the ORM model."""
+    """One candidate vehicle, isolated to a single result card / detail page."""
 
     title: str
     url: str
@@ -69,13 +72,18 @@ class RawListing:
     country: str | None = None
     extraction_method: str = "html_generic"
     raw_text: str = ""
+    # Provenance / quality of THIS candidate's detail link.
+    listing_url_quality: str = UNKNOWN
+    card_href_found: bool = False
+    page_type: str = OTHER
+    discovered_from_url: str | None = None
 
     def combined_text(self) -> str:
         return " ".join(filter(None, [self.title, self.description, self.raw_text]))
 
 
 def _enrich_from_text(rl: RawListing) -> None:
-    """Fill missing numeric fields from the combined text, deterministically."""
+    """Fill missing numeric fields from THIS card's own text only."""
     text = rl.combined_text()
     if rl.price is None:
         rl.price, cur = parse_price(text, rl.currency)
@@ -90,69 +98,241 @@ def _enrich_from_text(rl: RawListing) -> None:
         rl.displacement_cc = parse_displacement(text)
 
 
-def extract_listings_from_html(
-    html: str, base_url: str, source_domain: str, country: str | None = None
-) -> list[RawListing]:
-    """Best-effort extraction. Returns candidate listings; the pre-filter later
-    decides which are actually Ignis-related."""
-    results: list[RawListing] = []
-    seen_urls: set[str] = set()
+# --------------------------------------------------------------------------- #
+def _meta_url(soup: BeautifulSoup, base_url: str) -> str | None:
+    link = soup.find("link", rel=lambda v: v and "canonical" in v)
+    if link and link.get("href"):
+        return urljoin(base_url, link["href"])
+    og = soup.find("meta", property="og:url")
+    if og and og.get("content"):
+        return urljoin(base_url, og["content"])
+    return None
 
-    # 1) Structured JSON-LD (highest quality).
-    for node in extract_jsonld_vehicles(html):
-        url = node.get("url") or base_url
-        url = urljoin(base_url, url)
-        if url in seen_urls:
-            continue
-        seen_urls.add(url)
-        kw, hp = parse_power(str(node.get("power_raw") or ""))
-        rl = RawListing(
-            title=(node.get("title") or node.get("model") or "").strip() or base_url,
-            url=url,
-            source_domain=source_domain,
-            description=node.get("description"),
-            price=node.get("price"),
-            currency=node.get("currency"),
-            mileage_km=_coerce_km(node.get("mileage")),
-            year=parse_year(str(node.get("year") or "")),
-            power_kw=kw,
-            power_hp=hp,
-            displacement_cc=parse_displacement(str(node.get("displacement_raw") or "")),
-            vin=node.get("vin"),
-            color=node.get("color"),
-            fuel=node.get("fuel"),
-            transmission=node.get("transmission"),
-            images=[urljoin(base_url, i) for i in (node.get("images") or []) if i],
-            country=country,
-            extraction_method="jsonld",
-        )
-        _enrich_from_text(rl)
-        results.append(rl)
 
-    # 2) Heuristic anchor scan for pages without structured data.
-    soup = BeautifulSoup(html, "lxml")
+def _coerce_km(value) -> int | None:
+    if value is None:
+        return None
+    s = str(value)
+    km = parse_mileage(s)
+    if km is not None:
+        return km
+    digits = re.sub(r"[^\d]", "", s)
+    if digits:
+        n = int(digits)
+        if 0 <= n <= 1_000_000:
+            return n
+    return None
+
+
+def _isolated_card_text(anchor, base_url: str) -> str:
+    """Text of the smallest ancestor that still contains ONLY this one detail
+    anchor — so a neighbouring Jimny/Bus card can never leak into this card."""
+    best = anchor
+    node = anchor
+    for _ in range(5):
+        parent = node.parent
+        if parent is None or parent.name in ("body", "html"):
+            break
+        detail_anchors = 0
+        for x in parent.find_all("a", href=True):
+            if url_quality(urljoin(base_url, x["href"])) in (EXACT_DETAIL, LIKELY_DETAIL):
+                detail_anchors += 1
+                if detail_anchors > 1:
+                    break
+        if detail_anchors > 1:
+            break
+        best = parent
+        node = parent
+    return " ".join(best.get_text(" ", strip=True).split())[:500]
+
+
+def _card_title(anchor, card_text: str) -> str:
+    title = " ".join(anchor.get_text(" ", strip=True).split())
+    if len(title) < 3:
+        title = " ".join((anchor.get("title") or anchor.get("aria-label") or "").split())
+    if len(title) < 3:
+        card = anchor.find_parent(["li", "article", "div"])
+        if card:
+            h = card.find(["h1", "h2", "h3", "h4"])
+            if h:
+                title = " ".join(h.get_text(" ", strip=True).split())
+    return title[:200]
+
+
+def _card_image(anchor) -> list[str]:
+    card = anchor.find_parent(["li", "article", "div"]) or anchor
+    img = card.find("img")
+    if img:
+        src = img.get("src") or img.get("data-src") or img.get("data-lazy")
+        if src and src.startswith(("http", "//", "/")):
+            return [src]
+    return []
+
+
+def _card_candidates(soup: BeautifulSoup, base_url: str, domain: str,
+                     country: str | None) -> list[RawListing]:
+    seen: dict[str, RawListing] = {}
+    page_key = normalize_url(base_url)
     for a in soup.find_all("a", href=True):
-        text = " ".join(a.get_text(" ", strip=True).split())
-        if not text or not _INTEREST.search(text):
+        abs_url = urljoin(base_url, a["href"])
+        q = url_quality(abs_url)
+        if q not in (EXACT_DETAIL, LIKELY_DETAIL):
             continue
-        url = urljoin(base_url, a["href"])
-        if url in seen_urls:
+        key = normalize_url(abs_url)
+        if key == page_key or key in seen:
             continue
-        seen_urls.add(url)
-        # Pull a little context from the surrounding block.
-        context = ""
-        parent = a.find_parent(["li", "div", "article", "tr"])
-        if parent:
-            context = " ".join(parent.get_text(" ", strip=True).split())[:600]
+        card_text = _isolated_card_text(a, base_url)
+        title = _card_title(a, card_text)
+        if not title or len(title) < 3:
+            continue
+        images = _card_image(a)
         rl = RawListing(
-            title=text[:200],
-            url=url,
-            source_domain=source_domain,
-            raw_text=context,
-            country=country,
-            extraction_method="anchor_heuristic",
-        )
+            title=title, url=abs_url, source_domain=domain, raw_text=card_text,
+            images=[urljoin(base_url, i) for i in images], country=country,
+            extraction_method="card_anchor", listing_url_quality=q,
+            card_href_found=True, discovered_from_url=base_url)
         _enrich_from_text(rl)
-        results.append(rl)
+        seen[key] = rl
+    return list(seen.values())
 
-    return results
+
+def _candidate_from_jsonld(node: dict, base_url: str, domain: str,
+                           country: str | None) -> RawListing | None:
+    url = node.get("url")
+    if not url:
+        return None
+    abs_url = urljoin(base_url, url)
+    q = url_quality(abs_url)
+    if q not in (EXACT_DETAIL, LIKELY_DETAIL):
+        return None
+    kw, hp = parse_power(str(node.get("power_raw") or ""))
+    rl = RawListing(
+        title=(node.get("title") or node.get("model") or "").strip() or abs_url,
+        url=abs_url, source_domain=domain, description=node.get("description"),
+        price=node.get("price"), currency=node.get("currency"),
+        mileage_km=_coerce_km(node.get("mileage")),
+        year=parse_year(str(node.get("year") or "")), power_kw=kw, power_hp=hp,
+        displacement_cc=parse_displacement(str(node.get("displacement_raw") or "")),
+        vin=node.get("vin"), color=node.get("color"), fuel=node.get("fuel"),
+        transmission=node.get("transmission"),
+        images=[urljoin(base_url, i) for i in (node.get("images") or []) if i],
+        country=country, extraction_method="jsonld", listing_url_quality=q,
+        card_href_found=True, discovered_from_url=base_url)
+    _enrich_from_text(rl)
+    return rl
+
+
+def _individual_candidate(soup: BeautifulSoup, jl: list[dict], detail_url: str,
+                          domain: str, country: str | None) -> RawListing | None:
+    """Build the single candidate for an INDIVIDUAL detail page. Title comes
+    from JSON-LD / og:title / <h1> — never a search query."""
+    node = jl[0] if jl else {}
+    title = (node.get("title") or "").strip()
+    if not title:
+        og = soup.find("meta", property="og:title")
+        if og and og.get("content"):
+            title = " ".join(og["content"].split())
+    if not title:
+        h1 = soup.find("h1")
+        if h1:
+            title = " ".join(h1.get_text(" ", strip=True).split())
+    if not title:
+        return None
+    kw, hp = parse_power(str(node.get("power_raw") or ""))
+    body_text = " ".join(soup.get_text(" ", strip=True).split())[:1500]
+    rl = RawListing(
+        title=title[:200], url=detail_url, source_domain=domain,
+        description=node.get("description"),
+        price=node.get("price"), currency=node.get("currency"),
+        mileage_km=_coerce_km(node.get("mileage")),
+        year=parse_year(str(node.get("year") or "")), power_kw=kw, power_hp=hp,
+        displacement_cc=parse_displacement(str(node.get("displacement_raw") or "")),
+        vin=node.get("vin"), color=node.get("color"),
+        images=[urljoin(detail_url, i) for i in (node.get("images") or []) if i],
+        country=country, extraction_method="individual",
+        listing_url_quality=url_quality(detail_url), card_href_found=True,
+        raw_text=body_text, page_type=INDIVIDUAL_LISTING,
+        discovered_from_url=detail_url)
+    _enrich_from_text(rl)
+    return rl
+
+
+def extract_page(html: str, base_url: str, source_domain: str,
+                 country: str | None = None) -> tuple[list[RawListing], str]:
+    """Return (candidates, page_type). Every candidate has an EXACT/LIKELY
+    detail URL; search/inventory pages yield per-card candidates only."""
+    if not html:
+        return [], OTHER
+    soup = BeautifulSoup(html, "lxml")
+    canonical = _meta_url(soup, base_url)
+    page_url = canonical or base_url
+    page_q = url_quality(page_url)
+
+    jl = []
+    for node in extract_jsonld_vehicles(html):
+        u = node.get("url")
+        if u:
+            node["url"] = urljoin(base_url, u)
+        jl.append(node)
+
+    cards = _card_candidates(soup, base_url, source_domain, country)
+
+    # A URL that itself looks like a detail page.
+    if page_q in (EXACT_DETAIL, LIKELY_DETAIL):
+        distinct = {normalize_url(c.url) for c in cards}
+        distinct.discard(normalize_url(page_url))
+        if len(distinct) >= 2:
+            page_type = DEALER_INVENTORY
+            return _finalize(cards, page_type, page_url), page_type
+        cand = _individual_candidate(soup, jl, page_url, source_domain, country)
+        if cand:
+            return [cand], INDIVIDUAL_LISTING
+        # detail-ish URL but nothing parseable
+        return [], OTHER
+
+    # Search / inventory / homepage.
+    if cards:
+        page_type = (SEARCH_RESULTS if page_q == SEARCH_PAGE else DEALER_INVENTORY)
+        return _finalize(cards, page_type, page_url), page_type
+
+    # No DOM cards — try JSON-LD product/vehicle nodes with specific URLs.
+    jl_cands = [c for c in (_candidate_from_jsonld(n, base_url, source_domain, country)
+                            for n in jl) if c]
+    if jl_cands:
+        page_type = SEARCH_RESULTS if len(jl_cands) > 1 else OTHER
+        return _finalize(jl_cands, page_type, page_url), page_type
+
+    low = html.lower()
+    if any(m in low for m in _ARTICLE_MARKERS):
+        return [], ARTICLE
+    if page_q == HOMEPAGE:
+        return [], PAGE_HOMEPAGE
+    if page_q == SEARCH_PAGE:
+        return [], SEARCH_RESULTS   # search page we could not parse → 0 candidates
+    return [], OTHER
+
+
+def _finalize(cards: list[RawListing], page_type: str, page_url: str
+              ) -> list[RawListing]:
+    page_key = normalize_url(page_url)
+    out = []
+    for c in cards:
+        if normalize_url(c.url) == page_key:
+            continue  # never the page itself
+        if c.listing_url_quality not in (EXACT_DETAIL, LIKELY_DETAIL):
+            continue
+        c.page_type = page_type
+        out.append(c)
+    return out
+
+
+def extract_listings_from_html(html: str, base_url: str, source_domain: str,
+                               country: str | None = None) -> list[RawListing]:
+    """Back-compatible entry point: returns just the candidate list."""
+    # Marktplaats (and similar) get a dedicated adapter first.
+    from .marktplaats import maybe_extract_marktplaats
+    special = maybe_extract_marktplaats(html, base_url, source_domain, country)
+    if special is not None:
+        return special
+    candidates, _ = extract_page(html, base_url, source_domain, country)
+    return candidates

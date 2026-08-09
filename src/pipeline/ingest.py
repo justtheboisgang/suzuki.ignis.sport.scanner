@@ -77,11 +77,11 @@ def process_candidate(raw: RawListing, source: Source | None) -> IngestResult:
     """
     settings = get_settings()
     text = raw.combined_text()
-    # Identity = the vehicle's OWN text (title + its description). Page context
-    # (anchor siblings) is passed only as weak corroboration — this is what
-    # stops "Suzuki Wagon R" scoring as an Ignis Sport.
-    identity = f"{raw.title or ''} {raw.description or ''}"
-    pf = prefilter(identity, raw.raw_text or "", year=raw.year,
+    # Candidate isolation: use ONLY this card's own text (title + description +
+    # its isolated card text). No page-wide context — a neighbouring
+    # Ignis-Sport card can never bleed into a Bus/Jimny/Swift candidate.
+    identity = f"{raw.title or ''} {raw.description or ''} {raw.raw_text or ''}"
+    pf = prefilter(identity, "", year=raw.year,
                    power_kw=raw.power_kw, power_hp=raw.power_hp,
                    displacement_cc=raw.displacement_cc)
     if not pf.relevant:
@@ -164,6 +164,16 @@ def process_candidate(raw: RawListing, source: Source | None) -> IngestResult:
                                            has_authoritative_offer=False)
     lhd, lhd_conf = infer_lhd_rhd(text, raw.country)
     src_is_dealer = bool(source and source.source_type in _DEALER_TYPES)
+
+    # A candidate without a concrete individual detail URL is not shown as a
+    # normal active listing — it is stored UNRESOLVED until we find the exact ad.
+    from ..parsers.urltype import url_quality as _url_quality
+    url_quality = getattr(raw, "listing_url_quality", "UNKNOWN")
+    if url_quality == "UNKNOWN":
+        url_quality = _url_quality(raw.url)
+    has_detail = url_quality in ("EXACT_DETAIL", "LIKELY_DETAIL")
+    status_val = (ListingStatus.ACTIVE.value if has_detail
+                  else ListingStatus.UNRESOLVED.value)
     ai_analysis = None
     if ai_verdict is not None:
         ai_analysis = {"detective": ai_verdict.model_dump()}
@@ -202,7 +212,12 @@ def process_candidate(raw: RawListing, source: Source | None) -> IngestResult:
         listing_url=raw.url,
         original_listing_url=(raw.url if src_is_dealer else None),
         alternate_urls=[], source_id=(source.id if source else None),
-        listing_status=ListingStatus.ACTIVE.value,
+        listing_status=status_val,
+        listing_url_quality=url_quality,
+        page_type=getattr(raw, "page_type", None),
+        extraction_method=getattr(raw, "extraction_method", None),
+        card_href_found=getattr(raw, "card_href_found", False),
+        discovered_from_url=getattr(raw, "discovered_from_url", None),
         description_original=desc or None,
         description_language=detect_language(desc),
         description_normalized=normalize_text(desc)[:5000] or None,

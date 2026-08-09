@@ -2,11 +2,12 @@
 {% block title %}{{ (l.title or 'Listing')[:50] }} · Ignis Sport Hunter{% endblock %}
 {% block body %}
 <a href="/listings">← back</a>
-{% set ext = (l.canonical_listing_url or l.original_listing_url or l.listing_url) %}
+{% set ext = l.external_detail_url %}
 <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-top:8px;">
   <h2 class="section-title" style="margin:0">{{ l.title or 'Untitled listing' }}</h2>
   {% if ext %}<a class="pill" style="background:var(--accent); color:#111; font-weight:600;
-     padding:4px 12px;" href="{{ ext }}" target="_blank" rel="noopener noreferrer">Original-Anzeige ↗</a>{% endif %}
+     padding:4px 12px;" href="{{ ext }}" target="_blank" rel="noopener noreferrer">Original-Anzeige ↗</a>
+  {% else %}<span class="pill muted">Konkrete Anzeige noch nicht gefunden</span>{% endif %}
 </div>
 
 {% if l.image_urls %}
@@ -149,4 +150,21 @@
 <h2 class="section-title">📝 Original description ({{ l.description_language or '?' }})</h2>
 <div class="card muted" style="white-space:pre-wrap">{{ l.description_original[:3000] }}</div>
 {% endif %}
+
+<h2 class="section-title" style="margin-top:18px">🐞 Source debug</h2>
+<div class="card muted" style="font-size:12px">
+  <table>
+    <tr><td>source domain</td><td>{{ source.domain if source else '–' }}</td></tr>
+    <tr><td>page type</td><td>{{ l.page_type or '–' }}</td></tr>
+    <tr><td>listing_url_quality</td><td>{{ l.listing_url_quality or '–' }}</td></tr>
+    <tr><td>exact listing URL</td><td>{{ l.external_detail_url or '(none — search/homepage only)' }}</td></tr>
+    <tr><td>listing_url (found)</td><td>{{ l.listing_url }}</td></tr>
+    <tr><td>discovered from URL</td><td>{{ l.discovered_from_url or '–' }}</td></tr>
+    <tr><td>discovery source / query</td><td>{{ l.discovery_source or '–' }}
+        {% if l.discovered_by_provider %}· {{ l.discovered_by_provider }}{% endif %}</td></tr>
+    <tr><td>parser / extraction method</td><td>{{ l.extraction_method or '–' }}</td></tr>
+    <tr><td>card href extracted</td><td>{{ 'yes' if l.card_href_found else 'no' }}</td></tr>
+    <tr><td>status</td><td>{{ l.listing_status }}</td></tr>
+  </table>
+</div>
 {% endblock %}

@@ -34,6 +34,9 @@ class ListingStatus(str, Enum):
     REMOVED = "REMOVED"
     ARCHIVED = "ARCHIVED"
     UNKNOWN = "UNKNOWN"
+    # No concrete individual detail URL yet (only a search/inventory/homepage
+    # URL is known) — kept but hidden from the main candidate dashboard.
+    UNRESOLVED = "UNRESOLVED"
 
 
 class SellerType(str, Enum):

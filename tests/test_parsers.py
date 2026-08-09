@@ -55,13 +55,20 @@ def test_html_generic_uses_jsonld_first():
     assert top.displacement_cc == 1490
 
 
-def test_html_generic_anchor_heuristic():
+def test_html_generic_card_isolation():
+    # The extractor is model-agnostic: it returns one candidate PER card, each
+    # with its OWN exact detail href and isolated text. (Non-Ignis models are
+    # dropped later by the classifier, not by the extractor.)
     listings = extract_listings_from_html(
         ANCHOR_PAGE, "https://autohaus-mueller.de/", "autohaus-mueller.de", "DE")
-    titles = [l.title for l in listings]
-    assert any("Ignis" in t for t in titles)
-    # The VW Polo anchor must NOT be captured (no ignis/suzuki interest match).
-    assert not any("Polo" in t for t in titles)
+    by_title = {l.title: l for l in listings}
+    assert any("Ignis" in t for t in by_title)
     ignis = [l for l in listings if "Ignis" in l.title][0]
+    # Its listing_url must be its OWN detail href, never the page/homepage.
+    assert ignis.url.endswith("/inventar/suzuki-ignis-sport-2005")
+    assert ignis.listing_url_quality in ("EXACT_DETAIL", "LIKELY_DETAIL")
+    assert ignis.card_href_found is True
     assert ignis.mileage_km == 120000
     assert ignis.price == 4750.0
+    # The Ignis card's isolated text must NOT contain the VW Polo card's text.
+    assert "Polo" not in ignis.combined_text()

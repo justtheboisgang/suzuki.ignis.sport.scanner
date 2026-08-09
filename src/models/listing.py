@@ -76,6 +76,15 @@ class Listing(Base):
     canonical_listing_url: Mapped[str | None] = mapped_column(String(1000))
     is_long_tail: Mapped[bool] = mapped_column(default=False, index=True)
 
+    # URL / extraction quality (fixes search-page-as-listing bug).
+    # EXACT_DETAIL / LIKELY_DETAIL / SEARCH_PAGE / HOMEPAGE / UNKNOWN
+    listing_url_quality: Mapped[str] = mapped_column(String(16), default="UNKNOWN",
+                                                     index=True)
+    page_type: Mapped[str | None] = mapped_column(String(24))
+    extraction_method: Mapped[str | None] = mapped_column(String(30))
+    card_href_found: Mapped[bool] = mapped_column(default=False)
+    discovered_from_url: Mapped[str | None] = mapped_column(String(1000))
+
     first_seen_at: Mapped[datetime] = created_column()
     last_seen_at: Mapped[datetime] = updated_column()
     last_verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
@@ -134,6 +143,18 @@ class Listing(Base):
                                  cascade="all, delete-orphan")
     status_history = relationship("StatusHistory", back_populates="listing",
                                   cascade="all, delete-orphan")
+
+    @property
+    def external_detail_url(self) -> str | None:
+        """The best CONCRETE individual-listing URL, or None if we only know a
+        search/inventory/homepage URL. The dashboard only shows an
+        'Original-Anzeige' button when this is not None."""
+        from ..parsers.urltype import url_quality
+        for u in (self.canonical_listing_url, self.original_listing_url,
+                  self.listing_url):
+            if u and url_quality(u) in ("EXACT_DETAIL", "LIKELY_DETAIL"):
+                return u
+        return None
 
     def __repr__(self) -> str:  # pragma: no cover
         return (
