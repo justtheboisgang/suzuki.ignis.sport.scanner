@@ -77,12 +77,11 @@ def process_candidate(raw: RawListing, source: Source | None) -> IngestResult:
     """
     settings = get_settings()
     text = raw.combined_text()
-    # Candidate isolation: use ONLY this card's own text (title + description +
-    # its isolated card text). No page-wide context — a neighbouring
-    # Ignis-Sport card can never bleed into a Bus/Jimny/Swift candidate.
-    identity = f"{raw.title or ''} {raw.description or ''} {raw.raw_text or ''}"
-    pf = prefilter(identity, "", year=raw.year,
-                   power_kw=raw.power_kw, power_hp=raw.power_hp,
+    # Title-first: identity comes from the card's TITLE; the (card-isolated)
+    # description only helps decide Sport vs. base once the title is an Ignis.
+    pf = prefilter(raw.title or "",
+                   f"{raw.description or ''} {raw.raw_text or ''}",
+                   year=raw.year, power_kw=raw.power_kw, power_hp=raw.power_hp,
                    displacement_cc=raw.displacement_cc)
     if not pf.relevant:
         # OTHER_MODEL / IRRELEVANT — hard-rejected, never stored as a candidate.
@@ -283,16 +282,31 @@ def _update_existing(session, existing: Listing, candidate: Listing,
                      source: Source | None) -> bool:
     now = datetime.now(timezone.utc)
     price_changed = False
-    if (candidate.price_eur is not None and existing.price_eur is not None
-            and abs(candidate.price_eur - existing.price_eur) >= 1):
+    # A real seller price change is measured in the ORIGINAL currency/amount.
+    # An EUR-only difference caused by FX drift is NOT a price drop (e.g.
+    # 15000 PLN unchanged but €3450 → €3435).
+    old_orig, new_orig = existing.price_original, candidate.price_original
+    same_currency = (existing.currency or "") == (candidate.currency or "")
+    real_change = (
+        new_orig is not None and old_orig is not None and same_currency
+        and abs(new_orig - old_orig) >= 1
+    ) or (new_orig is not None and old_orig is not None and not same_currency)
+
+    if real_change:
         session.add(PriceHistory(
             listing_id=existing.id, old_price_eur=existing.price_eur,
             new_price_eur=candidate.price_eur,
-            delta_eur=round(candidate.price_eur - existing.price_eur, 2)))
+            delta_eur=(round((candidate.price_eur or 0) - (existing.price_eur or 0), 2)
+                       if candidate.price_eur is not None and existing.price_eur is not None
+                       else None)))
+        price_changed = True
+    # Always refresh stored price to the latest (for scoring), even on FX-only
+    # moves — but that alone never creates a price-drop event above.
+    if candidate.price_original is not None:
         existing.price_original = candidate.price_original
         existing.currency = candidate.currency
+    if candidate.price_eur is not None:
         existing.price_eur = candidate.price_eur
-        price_changed = True
 
     if existing.listing_status != ListingStatus.ACTIVE.value:
         _record_status(session, existing, existing.listing_status,

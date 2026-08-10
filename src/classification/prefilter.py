@@ -68,60 +68,71 @@ def _hits(text: str, terms) -> list[str]:
     return [t for t in terms if t in text]
 
 
-def prefilter(identity_text: str, context_text: str = "", *,
+def prefilter(title: str, description: str = "", *,
               year: int | None = None, power_kw: int | None = None,
               power_hp: int | None = None,
               displacement_cc: int | None = None) -> PreFilterResult:
-    """Classify a candidate. `identity_text` is the vehicle's own title(+desc);
-    `context_text` is surrounding page context used only for weak corroboration.
+    """Classify a candidate with a TITLE-FIRST hard model gate.
+
+    Vehicle IDENTITY (is it an Ignis? is it another model?) is decided from the
+    TITLE alone — a (possibly contaminated) description can never establish Ignis
+    identity nor upgrade another model. Only once the title confirms an Ignis do
+    the description + technical data help decide Sport vs. base.
     """
-    identity = f" {normalize_text(identity_text).lower()} "
-    context = f" {normalize_text(context_text).lower()} "
-    full = identity + context
+    t = f" {normalize_text(title).lower()} "
+    d = f" {normalize_text(description).lower()} "
+    full = t + d
 
-    other = _match_terms(identity, TARGET.other_models)
-    ignis_id = _word(identity, "ignis")
-    chassis_id = any(c in identity for c in _CHASSIS)
-    chassis_ctx = any(c in context for c in _CHASSIS)
+    other_t = _match_terms(t, TARGET.other_models)     # other model IN TITLE
+    ignis_t = _word(t, "ignis")                         # 'ignis' IN TITLE
+    chassis_t = any(c in t for c in _CHASSIS)           # HT81S IN TITLE
 
+    # Technical fingerprint present in the TITLE (used only for the ambiguous,
+    # model-less path — never from the description, to avoid contamination).
+    title_tech = any(x in t for x in (" 1.5", " 1,5", "1500", "1490", "80 kw",
+                                      "80kw", "109 ps", "109ps", "109 hp",
+                                      "109 cv", "109 pk", "m15a"))
+
+    # ---- GATE 1: explicit OTHER Suzuki model in the TITLE ----------------
+    if other_t and not ignis_t and not chassis_t:
+        return PreFilterResult(
+            bucket=OTHER_MODEL, is_ignis=False, other_model=other_t,
+            negative_signals=[f"other_model:{other_t}"],
+            reason=f"title names another Suzuki model: {other_t}")
+
+    # ---- Chassis code in the TITLE = definitive Ignis Sport --------------
+    if chassis_t:
+        tech = _hits(full, TARGET.tech_hint_terms)
+        return PreFilterResult(
+            bucket=CLEAR_IGNIS_SPORT, is_ignis=True,
+            positive_signals=["chassis:ht81s"], tech_hints=[f"tech:{x}" for x in tech],
+            reason="HT81S chassis code in title")
+
+    # ---- Stage A: is the TITLE an Ignis? --------------------------------
+    if not ignis_t:
+        # The title does not name Ignis. Identity must NOT come from the
+        # description. Only a model-less title with strong tech IN THE TITLE
+        # defers to AI; otherwise it is not our car.
+        if not other_t and title_tech and TARGET.year_plausible(year):
+            return PreFilterResult(
+                bucket=UNKNOWN, is_ignis=False, needs_ai=True,
+                reason="title model unclear but title tech may indicate Ignis")
+        return PreFilterResult(
+            bucket=IRRELEVANT, is_ignis=False, other_model=other_t,
+            reason="title not identifiable as a Suzuki Ignis")
+
+    # ---- Stage B: title IS an Ignis — Sport or base? --------------------
+    # Now (and only now) the description may corroborate Sport signals.
     negatives = _hits(full, TARGET.negative_terms)
     tech = _hits(full, TARGET.tech_hint_terms)
     equip = _hits(full, TARGET.equipment_terms)
-
-    # ---- GATE 1: explicit OTHER Suzuki model that is not an Ignis --------
-    if other and not ignis_id and not chassis_id:
-        return PreFilterResult(
-            bucket=OTHER_MODEL, is_ignis=False, other_model=other,
-            negative_signals=[f"other_model:{other}"],
-            reason=f"identity names another Suzuki model: {other}")
-
-    # ---- Chassis code in the identity = definitive Ignis Sport -----------
-    if chassis_id:
-        return PreFilterResult(
-            bucket=CLEAR_IGNIS_SPORT, is_ignis=True,
-            positive_signals=["chassis:ht81s"], tech_hints=[f"tech:{t}" for t in tech],
-            reason="HT81S chassis code in identity")
-
-    # ---- GATE 2 (Stage A): is this an Ignis at all? ----------------------
+    chassis_ctx = any(c in d for c in _CHASSIS)
     strong_tech = any(x in full for x in (" 1.5", " 1,5", "1500", "1490",
                                           "80 kw", "80kw", "109 ps", "109ps",
                                           "109 hp", "109 cv", "109 pk", "m15a"))
-    if not ignis_id:
-        # Model not named in identity. Only if NO other model is named AND
-        # strong technical evidence suggests an Ignis do we defer to AI.
-        if not other and strong_tech and TARGET.year_plausible(year):
-            return PreFilterResult(
-                bucket=UNKNOWN, is_ignis=False, needs_ai=True,
-                tech_hints=[f"tech:{t}" for t in tech],
-                reason="model unclear but technical data may indicate Ignis")
-        return PreFilterResult(
-            bucket=IRRELEVANT, is_ignis=False,
-            other_model=other,
-            reason="not identifiable as a Suzuki Ignis")
 
-    # ---- Stage B: it IS an Ignis — is it the Sport? ----------------------
     positive = ["name:ignis"]
-    strong_name = _match_terms(identity, TARGET.strong_name_terms) or \
+    strong_name = _match_terms(t, TARGET.strong_name_terms) or \
         _match_terms(full, ("ignis sport", "ignis 1.5 sport", "ignis 1,5 sport",
                             "ignis 1.5 vvt sport", "sport ignis"))
     new_gen = bool(negatives) or (year is not None and year >= 2015)

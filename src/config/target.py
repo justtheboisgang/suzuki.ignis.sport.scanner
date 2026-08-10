@@ -104,6 +104,7 @@ class IgnisSportProfile:
         "celerio", "across", "swace", "carry", "cappuccino", "cara", "x-90",
         "xl7", "xl-7", "x90", "esteem", "aerio", "forenza", "reno", "verona",
         "sidekick", "vitara brezza", "ertiga", "ciaz", "fronx", "jimny sierra",
+        "bus", "carry bus", "super carry", "apv", "eeco", "every", "landy",
     )
 
     negative_terms: tuple[str, ...] = field(

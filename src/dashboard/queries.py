@@ -5,24 +5,50 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import func
+from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from ..config.countries import COUNTRIES
 from ..models.discovery import DiscoveryQuery
-from ..models.enums import ListingStatus
+from ..models.enums import Classification, ListingStatus
 from ..models.feedback import Notification
 from ..models.listing import Listing
 from ..models.scan import ScanRun
 from ..models.source import Source
 
 ACTIVE = (ListingStatus.ACTIVE.value, ListingStatus.MAYBE_ACTIVE.value)
+_BAD_URL_QUALITY = ["SEARCH_PAGE", "HOMEPAGE"]
 
 
 def _aware(dt):
     if dt is not None and dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt
+
+
+def candidate_conditions(include_status: bool = True) -> list:
+    """THE single definition of a 'valid candidate' shown on the dashboard,
+    reused by every table AND every counter so they can never disagree:
+      * status ACTIVE / MAYBE_ACTIVE (never UNRESOLVED),
+      * classification is not NOT_IGNIS (drops other-model records),
+      * URL is not a search/inventory/homepage-only page.
+    """
+    conds = [
+        or_(Listing.classification.is_(None),
+            Listing.classification != Classification.NOT_IGNIS.value),
+        or_(Listing.listing_url_quality.is_(None),
+            ~Listing.listing_url_quality.in_(_BAD_URL_QUALITY)),
+    ]
+    if include_status:
+        conds.append(Listing.listing_status.in_(ACTIVE))
+    return conds
+
+
+def candidate_query(session: Session):
+    q = session.query(Listing)
+    for c in candidate_conditions():
+        q = q.filter(c)
+    return q
 
 
 def filter_listings(session: Session, *, min_confidence=0, max_confidence=None,
@@ -32,10 +58,10 @@ def filter_listings(session: Session, *, min_confidence=0, max_confidence=None,
                     ) -> list[Listing]:
     q = session.query(Listing).filter(Listing.vehicle_match_confidence >= min_confidence)
     if only_resolved:
-        # Never surface UNRESOLVED candidates or ones whose only URL is a
-        # search/inventory/homepage page as normal active listings.
-        q = q.filter(Listing.listing_status != ListingStatus.UNRESOLVED.value)
-        q = q.filter(~Listing.listing_url_quality.in_(["SEARCH_PAGE", "HOMEPAGE"]))
+        # Apply the single shared valid-candidate predicate. If the caller asked
+        # for a specific status, honour it instead of the ACTIVE/MAYBE default.
+        for c in candidate_conditions(include_status=not status):
+            q = q.filter(c)
     if max_confidence is not None:
         q = q.filter(Listing.vehicle_match_confidence <= max_confidence)
     if country:
@@ -75,15 +101,17 @@ def home_stats(session) -> dict:
     now = datetime.now(timezone.utc)
     today = now - timedelta(hours=24)
 
+    # Counters use the SAME valid-candidate predicate as the tables, so the
+    # headline numbers can never include historical NOT_IGNIS / UNRESOLVED rows.
     def active_q():
-        return session.query(Listing).filter(Listing.listing_status.in_(ACTIVE))
+        return candidate_query(session)
 
     threshold = 60
     new_today = active_q().filter(Listing.vehicle_match_confidence >= threshold,
                                   Listing.first_seen_at >= today).count()
     total_active = active_q().filter(
         Listing.vehicle_match_confidence >= threshold).count()
-    uncertain = session.query(Listing).filter(
+    uncertain = active_q().filter(
         Listing.vehicle_match_confidence >= 40,
         Listing.vehicle_match_confidence < threshold).count()
 

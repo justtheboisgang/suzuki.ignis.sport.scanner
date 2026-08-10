@@ -45,9 +45,11 @@ def reclassify_listings(batch: int = 500) -> dict:
                 if not lst:
                     continue
                 counts["total"] += 1
-                identity = f"{lst.title or ''} {lst.description_original or ''}"
-                pf = prefilter(identity, "", year=lst.production_year,
-                               power_kw=lst.power_kw, power_hp=lst.power_hp,
+                # TITLE-FIRST: a contaminated historical description must never
+                # re-upgrade an explicit other model (Bus/Jimny/Swift/…).
+                pf = prefilter(lst.title or "", lst.description_original or "",
+                               year=lst.production_year, power_kw=lst.power_kw,
+                               power_hp=lst.power_hp,
                                displacement_cc=lst.displacement_cc)
                 cr = score_confidence(pf, year=lst.production_year,
                                       power_kw=lst.power_kw, power_hp=lst.power_hp,
