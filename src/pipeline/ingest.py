@@ -158,9 +158,11 @@ def process_candidate(raw: RawListing, source: Source | None) -> IngestResult:
     # Precompute plain column values so the write callable is retry-safe.
     desc = raw.description or raw.raw_text or ""
     price_eur_raw = to_eur(raw.price, raw.currency)
-    # Guard against €1 placeholders / "price on request" / financing figures.
-    price_eur, price_status = price_sanity(price_eur_raw, text,
-                                           has_authoritative_offer=False)
+    # Guard against €1 placeholders, "price on request", financing figures, a
+    # year mistaken for a price, and implausible part/index numbers.
+    price_eur, price_status = price_sanity(
+        price_eur_raw, text, has_authoritative_offer=False, year=raw.year,
+        price_original=raw.price, mileage_km=raw.mileage_km)
     lhd, lhd_conf = infer_lhd_rhd(text, raw.country)
     src_is_dealer = bool(source and source.source_type in _DEALER_TYPES)
 

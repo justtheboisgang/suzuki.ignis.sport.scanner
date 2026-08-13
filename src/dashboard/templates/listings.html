@@ -36,7 +36,7 @@
       <option value="{{ st }}" {{ 'selected' if filters.status==st }}>{{ st }}</option>{% endfor %}
     </select></label>
   <label>Sort
-    <select name="order_by">
+    <select name="order_by" onchange="this.form.submit()">
       {% for o in ['opportunity','confidence','newest','price'] %}
       <option value="{{ o }}" {{ 'selected' if filters.order_by==o }}>{{ o }}</option>{% endfor %}
     </select></label>

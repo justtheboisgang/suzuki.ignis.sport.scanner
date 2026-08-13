@@ -41,8 +41,9 @@ def score_confidence(pf: PreFilterResult, *, year: int | None = None,
     # Hard gate: not an Ignis → 0, NOT_IGNIS. (Other model / irrelevant / the
     # UNKNOWN bucket where the model wasn't confirmed.)
     if not pf.is_ignis:
-        cls = (Classification.NOT_IGNIS.value if pf.bucket in ("OTHER_MODEL",
-               "IRRELEVANT") else Classification.UNCERTAIN.value)
+        cls = (Classification.NOT_IGNIS.value if pf.bucket in (
+               "OTHER_MODEL", "IRRELEVANT", "NON_LISTING")
+               else Classification.UNCERTAIN.value)
         reason = pf.reason or "not a Suzuki Ignis"
         # UNKNOWN (model unclear, tech suggests Ignis) gets a small, sub-threshold
         # score so it surfaces for AI but never as a confident hit.

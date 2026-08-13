@@ -129,24 +129,41 @@ _ON_REQUEST = (
 
 
 def price_sanity(price_eur: float | None, text: str | None,
-                 has_authoritative_offer: bool = False) -> tuple[float | None, str]:
+                 has_authoritative_offer: bool = False,
+                 year: int | None = None,
+                 price_original: float | None = None,
+                 mileage_km: int | None = None,
+                 max_plausible_eur: float = 25_000) -> tuple[float | None, str]:
     """Sanity-check an extracted EUR price. Returns (price_eur, status) where
     status ∈ OK / SUSPECT / UNKNOWN.
 
-    A real used car is never €1 — such values are placeholders, financing
-    figures, image counters or index numbers, not the sale price. Unless a
-    clearly authoritative source vouches for it, an implausible price becomes
-    UNKNOWN so downstream scoring never treats it as a bargain.
+    Rejects: €1/placeholder/financing fragments; "price on request"; a 4-digit
+    YEAR mistaken for a price (e.g. spec-DB pages showing "€2.003" for a 2003
+    car); and implausibly high figures (part numbers / index numbers / new-car
+    prices) that no HT81S-class Ignis ever costs.
     """
     t = (text or "").lower()
     if any(p in t for p in _ON_REQUEST):
         return None, "UNKNOWN"
     if price_eur is None:
         return None, "UNKNOWN"
+
+    # Year-as-price: the "price" equals the production year (or is a bare 4-digit
+    # year with no cents) — this is a spec-database artefact, not a sale price.
+    amount = price_original if price_original is not None else price_eur
+    if amount is not None and float(amount).is_integer():
+        ai = int(amount)
+        if year is not None and abs(ai - year) <= 1 and 1990 <= year <= 2035:
+            return None, "SUSPECT"
+        if (year is None and mileage_km is None and 1996 <= ai <= 2027
+                and price_eur == ai):
+            # bare 4-digit year-looking price, no mileage/year context → spec DB
+            return None, "SUSPECT"
+
     if price_eur < 200:
-        # €1/€100 placeholders, monthly-payment fragments, etc.
         return (price_eur, "SUSPECT") if has_authoritative_offer else (None, "SUSPECT")
-    if price_eur > 250_000:
+    if price_eur > max_plausible_eur:
+        # €55k/€92k/€162k etc. — part/index numbers, not this car's price.
         return (price_eur, "SUSPECT") if has_authoritative_offer else (None, "SUSPECT")
     return price_eur, "OK"
 

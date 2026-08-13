@@ -27,12 +27,44 @@ from ..parsers.normalize import normalize_text
 # Bucket constants
 OTHER_MODEL = "OTHER_MODEL"
 IRRELEVANT = "IRRELEVANT"
+NON_LISTING = "NON_LISTING"          # info/spec/tax/parts/tuning/wanted page
 NORMAL_IGNIS = "NORMAL_IGNIS"
 POSSIBLE_IGNIS_SPORT = "POSSIBLE_IGNIS_SPORT"
 CLEAR_IGNIS_SPORT = "CLEAR_IGNIS_SPORT"
 UNKNOWN = "UNKNOWN"
 
 _CHASSIS = ("ht81s", "ht-81s", "ht 81s", "ht81")
+
+# --- Non-listing detection (a page ABOUT the car, or a part FOR it) ---------
+# Info-database / calculator pages (AutoUncle-style) whose title is a topic word
+# followed by the model, e.g. "Kfz-Steuer Suzuki Ignis 1.5 Sport".
+_NONLISTING_PREFIX = re.compile(
+    r"^\s*(reifen|verbrauch|wertverlust|finanzierung|versicherung|"
+    r"kfz[\s-]?steuer|kfz[\s-]?versicherung|leasing)\b", re.I)
+# Parts / tuning / spec / wanted signals anywhere in the title.
+_NONLISTING_ANY = (
+    "für suzuki", "für ignis", "for suzuki ignis", "voor de suzuki", "per suzuki",
+    "tieferlegung", "tieferlegungsfeder", "federsatz", "sportfeder",
+    "sportfedersatz", "stoßdämpfer", "stossdämpfer", "vogtland", "eibach",
+    "bilstein", "ersatzteil", "moteur ", "technische daten", "datenblatt",
+    "fiche technique", "prova su strada",
+)
+_WANTED = re.compile(r"\b(suche|gesucht|ankauf|wtb)\b", re.I)
+
+
+def is_non_listing_title(title: str) -> str | None:
+    """Return a reason if the TITLE is an info/spec/tax/parts/tuning/wanted page
+    rather than an individual vehicle for sale, else None."""
+    raw = normalize_text(title)
+    low = f" {raw.lower()} "
+    if _NONLISTING_PREFIX.search(raw):
+        return "info/calculator page"
+    for term in _NONLISTING_ANY:
+        if term in low:
+            return f"part/spec page ({term.strip()})"
+    if _WANTED.search(low) and ("suzuki" in low or "ignis" in low):
+        return "wanted ad"
+    return None
 
 
 @dataclass
@@ -48,7 +80,7 @@ class PreFilterResult:
 
     @property
     def relevant(self) -> bool:
-        return self.bucket not in (OTHER_MODEL, IRRELEVANT)
+        return self.bucket not in (OTHER_MODEL, IRRELEVANT, NON_LISTING)
 
 
 def _word(text: str, term: str) -> bool:
@@ -79,6 +111,15 @@ def prefilter(title: str, description: str = "", *,
     identity nor upgrade another model. Only once the title confirms an Ignis do
     the description + technical data help decide Sport vs. base.
     """
+    # ---- GATE 0: is this an individual vehicle at all, or a page ABOUT it /
+    #      a part FOR it (tax/insurance/consumption/specs/tuning/wanted)? -----
+    non_listing = is_non_listing_title(title)
+    if non_listing:
+        return PreFilterResult(
+            bucket=NON_LISTING, is_ignis=False,
+            negative_signals=[f"non_listing:{non_listing}"],
+            reason=f"not an individual vehicle for sale — {non_listing}")
+
     t = f" {normalize_text(title).lower()} "
     d = f" {normalize_text(description).lower()} "
     full = t + d

@@ -66,9 +66,12 @@ def reclassify_listings(batch: int = 500) -> dict:
                 elif cr.confidence >= 60:
                     counts["possible"] += 1
 
-                # Re-sanity the price using stored fields.
+                # Re-sanity the price using stored fields (year/original/mileage
+                # aware, so year-as-price and part numbers are dropped).
                 new_price, status = price_sanity(
-                    lst.price_eur, lst.description_original or lst.title or "")
+                    lst.price_eur, lst.description_original or lst.title or "",
+                    year=lst.production_year, price_original=lst.price_original,
+                    mileage_km=lst.mileage_km)
                 if status != "OK":
                     if lst.price_eur is not None and new_price is None:
                         counts["price_fixed"] += 1

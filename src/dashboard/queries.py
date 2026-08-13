@@ -84,7 +84,8 @@ def filter_listings(session: Session, *, min_confidence=0, max_confidence=None,
         q = q.order_by(Listing.opportunity_score.desc().nullslast(),
                        Listing.vehicle_match_confidence.desc())
     elif order_by == "newest":
-        q = q.order_by(Listing.first_seen_at.desc())
+        # id desc breaks ties when many rows share first_seen_at (bulk inserts).
+        q = q.order_by(Listing.first_seen_at.desc(), Listing.id.desc())
     elif order_by == "confidence":
         q = q.order_by(Listing.vehicle_match_confidence.desc())
     elif order_by == "price":

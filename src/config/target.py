@@ -113,9 +113,12 @@ class IgnisSportProfile:
             "shvs",
             "allgrip",
             "1.2 dualjet",
+            "dualjet",
             "1.2 hybrid",
             "mild hybrid",
-            "2017", "2018", "2019", "2020", "2021", "2022", "2023",
+            "smart hybrid",
+            "compact+",
+            "2017", "2018", "2019", "2020", "2021", "2022", "2023", "2024",
         )
     )
 
