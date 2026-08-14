@@ -232,9 +232,18 @@ class DiscoveryEngine:
                         processed_urls.add(nurl)
                         examined_this_query += 1
                         m["hits_examined"] += 1
-                        outcome = process_search_hit(
-                            fetcher, hit.url, hit.title, hit.snippet, gq.query,
-                            providers, hit.rank, hit.page, gq.country)
+                        # A single malformed page (odd JSON-LD, broken markup)
+                        # must never abort the whole discovery pass — isolate it.
+                        try:
+                            outcome = process_search_hit(
+                                fetcher, hit.url, hit.title, hit.snippet, gq.query,
+                                providers, hit.rank, hit.page, gq.country)
+                        except Exception as exc:  # noqa: BLE001
+                            m["skipped_other"] += 1
+                            m["hit_types"]["ERROR"] = m["hit_types"].get("ERROR", 0) + 1
+                            log.warning("hit failed %s: %s: %s", hit.url,
+                                        type(exc).__name__, exc)
+                            continue
                         ht = outcome.get("hit_type", "UNKNOWN")
                         m["hit_types"][ht] = m["hit_types"].get(ht, 0) + 1
                         if outcome.get("ingested"):

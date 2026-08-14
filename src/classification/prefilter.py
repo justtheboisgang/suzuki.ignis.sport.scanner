@@ -51,10 +51,22 @@ _NONLISTING_ANY = (
 )
 _WANTED = re.compile(r"\b(suche|gesucht|ankauf|wtb)\b", re.I)
 
+# Spec-catalog / datasheet titles (cars-data.com, AutoUncle, autoevolution …).
+# These describe a MODEL, never an individual car for sale:
+#   * "… | Baujahre 2003 - 2005"        — a model-year RANGE (plural Baujahre)
+#   * "Suzuki Ignis I MH/FH 1.5 i 16V"  — cars-data generation/facelift codes
+#   * "Ignis (Hatchback)"               — a body-style catalog entry
+_CATALOG_PATTERNS = (
+    (re.compile(r"\bbaujahre\s*\d{4}\s*[-–]\s*\d{4}", re.I), "model-year range"),
+    (re.compile(r"\bignis\s+i\s+(mh|fh|rm|rs|gh)\b", re.I), "generation-code spec"),
+    (re.compile(r"\(\s*hatchback\s*\)", re.I), "body-style catalog entry"),
+)
+
 
 def is_non_listing_title(title: str) -> str | None:
     """Return a reason if the TITLE is an info/spec/tax/parts/tuning/wanted page
-    rather than an individual vehicle for sale, else None."""
+    (or a model datasheet / catalog entry) rather than an individual vehicle for
+    sale, else None."""
     raw = normalize_text(title)
     low = f" {raw.lower()} "
     if _NONLISTING_PREFIX.search(raw):
@@ -62,6 +74,9 @@ def is_non_listing_title(title: str) -> str | None:
     for term in _NONLISTING_ANY:
         if term in low:
             return f"part/spec page ({term.strip()})"
+    for pat, label in _CATALOG_PATTERNS:
+        if pat.search(raw):
+            return f"spec catalog ({label})"
     if _WANTED.search(low) and ("suzuki" in low or "ignis" in low):
         return "wanted ad"
     return None

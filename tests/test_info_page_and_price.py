@@ -83,6 +83,32 @@ def test_wanted_ads_are_non_listing(title):
     assert cr.classification == Classification.NOT_IGNIS.value
 
 
+# Spec-catalog / datasheet pages (cars-data / AutoUncle / autoevolution) that
+# leaked into the dashboard as "Uncertain" candidates with year-as-price.
+@pytest.mark.parametrize("title", [
+    "Suzuki Ignis 1.5 Club Four Grip | 73 kW/99 PS | Baujahre 2003 - 2005",
+    "Suzuki Ignis 1.5 Comfort | 73 kW/99 PS | Baujahre 2003 - 2006",
+    "Suzuki Ignis I FH 1.5 i 16V Sport (109 Hp)",
+    "Suzuki Ignis I MH 1.5 i 16V (99 Hp) Automatic 2003",
+    "Suzuki Ignis I MH 1.5 i 16V (99 Hp) 4WD 2003",
+    "Ignis (Hatchback)",
+])
+def test_spec_catalog_pages_are_non_listing(title):
+    pf, cr = _run(title, year=2003)
+    assert pf.bucket == NON_LISTING
+    assert cr.confidence == 0
+    assert cr.classification == Classification.NOT_IGNIS.value
+
+
+def test_real_ad_with_parenthetical_power_is_not_catalog():
+    # A genuine ad may write "80 kW (109 PS)" — must NOT be mistaken for a
+    # cars-data catalog entry (those use the "Ignis I MH/FH" generation code).
+    assert is_non_listing_title("Suzuki Ignis Sport 1.5 80 kW (109 PS)") is None
+    pf, cr = _run("Suzuki Ignis Sport 1.5 80 kW (109 PS)", year=2005)
+    assert pf.is_ignis is True
+    assert pf.bucket == CLEAR_IGNIS_SPORT
+
+
 def test_is_non_listing_title_helper_returns_none_for_real_listing():
     assert is_non_listing_title("Suzuki Ignis Sport 1.5 109ps Recaro TÜV Neu") is None
     assert is_non_listing_title("Suzuki Ignis 1,5 von einem Rentner gefahren") is None

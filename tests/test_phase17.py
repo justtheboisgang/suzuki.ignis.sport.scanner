@@ -49,6 +49,28 @@ def test_query_families_cover_mislabelled_chassis_and_exclusion():
     assert any(q.high_value for q in qs if q.family in "ABE")
 
 
+def test_discovery_isolates_a_single_bad_hit(session, monkeypatch):
+    """Regression: one malformed page (e.g. odd JSON-LD) raised inside
+    process_search_hit and aborted the ENTIRE discovery run at query N/M. The
+    engine must now isolate per-hit failures and keep going."""
+    from src.discovery import engine as eng
+    from src.discovery import hits as hits_mod
+
+    hit = SearchHit(title="Suzuki Ignis Sport",
+                    url="https://tiny-dealer.de/ignis-sport-1")
+    e = eng.DiscoveryEngine()
+    e.multi = MultiProvider([_FakeProvider("brave", [hit])])
+
+    def boom(*a, **k):
+        raise AttributeError("'list' object has no attribute 'get'")
+    monkeypatch.setattr(hits_mod, "process_search_hit", boom)
+
+    # Must NOT raise; the run completes and records the failed hit transparently.
+    result = e.run(countries=["DE"], max_queries=1, max_hits_per_query=5)
+    assert result["executed"] >= 1
+    assert result["hit_types"].get("ERROR", 0) >= 1
+
+
 def test_multiprovider_dedup_and_provenance(session):
     # `session` fixture ensures the ProviderUsage rows written by the fake
     # providers are cleaned up so they don't leak into budget tests.

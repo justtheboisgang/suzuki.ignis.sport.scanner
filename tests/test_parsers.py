@@ -43,6 +43,22 @@ def test_jsonld_extraction():
     assert v["currency"] == "EUR"
 
 
+def test_jsonld_offers_as_list_does_not_crash():
+    # Regression: a page whose "offers" is a list (or a nested list) crashed the
+    # WHOLE discovery pass with "'list' object has no attribute 'get'".
+    list_offer = JSONLD_PAGE.replace(
+        '"offers": {"@type": "Offer", "price": "4900", "priceCurrency": "EUR"}',
+        '"offers": [{"@type": "Offer", "price": "4900", "priceCurrency": "EUR"}]')
+    v = extract_jsonld_vehicles(list_offer)
+    assert v and v[0]["price"] == 4900.0
+
+    nested = JSONLD_PAGE.replace(
+        '"offers": {"@type": "Offer", "price": "4900", "priceCurrency": "EUR"}',
+        '"offers": [[{"price": "4900"}]]')
+    # Must not raise; price simply can't be read from a malformed nested list.
+    assert extract_jsonld_vehicles(nested)  # no exception is the point
+
+
 def test_html_generic_uses_jsonld_first():
     listings = extract_listings_from_html(
         JSONLD_PAGE, "https://autohaus-mueller.de/", "autohaus-mueller.de", "DE")

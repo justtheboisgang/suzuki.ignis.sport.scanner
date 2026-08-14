@@ -65,12 +65,12 @@ def _first(*vals):
 def _normalise_node(obj: dict) -> dict:
     offers = obj.get("offers")
     price = currency = None
+    if isinstance(offers, list):
+        # offers may be a (possibly nested) list; use the first dict we find.
+        offers = next((o for o in offers if isinstance(o, dict)), None)
     if isinstance(offers, dict):
         price = offers.get("price")
         currency = offers.get("priceCurrency")
-    elif isinstance(offers, list) and offers:
-        price = offers[0].get("price")
-        currency = offers[0].get("priceCurrency")
 
     engine = obj.get("vehicleEngine")
     power = None
